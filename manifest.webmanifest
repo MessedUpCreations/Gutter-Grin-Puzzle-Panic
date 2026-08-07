@@ -1,0 +1,13 @@
+{
+  "name": "Gutter Grin: Puzzle Panic",
+  "short_name": "Puzzle Panic",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f0f11",
+  "theme_color": "#0f0f11",
+  "description": "A mobile-friendly Gutter Grin browser puzzle game.",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
