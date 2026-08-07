@@ -37,6 +37,65 @@ let currentView = 'home';
 let game = null;
 let timerHandle = null;
 let previewHandle = null;
+let firebaseContext = null;
+
+async function getFirebaseContext() {
+  const config = window.GG_FIREBASE_CONFIG;
+
+  if (!config) {
+    throw new Error('Firebase configuration is missing.');
+  }
+
+  if (firebaseContext) {
+    return firebaseContext;
+  }
+
+  const [appMod, authMod, firestoreMod] = await Promise.all([
+    import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js'),
+    import('https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js'),
+    import('https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js'),
+  ]);
+
+  const firebaseApp = appMod.getApps().length
+    ? appMod.getApps()[0]
+    : appMod.initializeApp(config);
+
+  firebaseContext = {
+    authMod,
+    firestoreMod,
+    auth: authMod.getAuth(firebaseApp),
+    db: firestoreMod.getFirestore(firebaseApp),
+  };
+
+  return firebaseContext;
+}
+
+async function syncPlayerProfileToCloud(user, providerName) {
+  const { db, firestoreMod } = await getFirebaseContext();
+
+  const userRef = firestoreMod.doc(db, 'users', user.uid);
+  const existing = await firestoreMod.getDoc(userRef);
+
+  const profileData = {
+    displayName:
+      user.displayName ||
+      user.email ||
+      `${capitalize(providerName)} Player`,
+    email: user.email || null,
+    photoURL: user.photoURL || null,
+    provider: providerName,
+    lastLoginAt: firestoreMod.serverTimestamp(),
+  };
+
+  if (existing.exists()) {
+    await firestoreMod.updateDoc(userRef, profileData);
+  } else {
+    await firestoreMod.setDoc(userRef, {
+      ...profileData,
+      createdAt: firestoreMod.serverTimestamp(),
+    });
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -393,36 +452,71 @@ function reshuffle() {
 
 async function signInWithProvider(providerName) {
   const config = window.GG_FIREBASE_CONFIG;
+
   if (!config) {
     return showModal(
       'OAuth Setup Needed',
-      `${capitalize(providerName)} sign-in is wired into the prototype, but it needs your Firebase web configuration and provider credentials before it can go live. Guest play already works now.`,
+      `${capitalize(providerName)} sign-in needs your Firebase configuration before it can go live.`,
       [{ label: 'Continue as Guest', primary: true }],
       providerName === 'google' ? 'G' : 'f'
     );
   }
+
   if (location.protocol === 'file:') {
-    return showModal('Host the Game First', 'Google/Facebook authentication needs the game hosted on an approved HTTPS domain. Guest mode works from a local file.', [{ label: 'Got it', primary: true }], '🔐');
+    return showModal(
+      'Host the Game First',
+      'Google/Facebook authentication needs the game hosted on an approved HTTPS domain.',
+      [{ label: 'Got it', primary: true }],
+      '🔐'
+    );
   }
 
   try {
-    const appMod = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js');
-    const authMod = await import('https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js');
-    const firebaseApp = appMod.getApps().length ? appMod.getApps()[0] : appMod.initializeApp(config);
-    const auth = authMod.getAuth(firebaseApp);
-    const provider = providerName === 'google' ? new authMod.GoogleAuthProvider() : new authMod.FacebookAuthProvider();
+    const { auth, authMod } = await getFirebaseContext();
+
+    const provider =
+      providerName === 'google'
+        ? new authMod.GoogleAuthProvider()
+        : new authMod.FacebookAuthProvider();
+
     const result = await authMod.signInWithPopup(auth, provider);
+
     state.profile = {
       provider: providerName,
-      name: result.user.displayName || result.user.email || `${capitalize(providerName)} Player`,
+      name:
+        result.user.displayName ||
+        result.user.email ||
+        `${capitalize(providerName)} Player`,
       uid: result.user.uid,
     };
+
     saveState();
+
+    let cloudSaved = true;
+
+    try {
+      await syncPlayerProfileToCloud(result.user, providerName);
+    } catch (cloudError) {
+      cloudSaved = false;
+      console.error('Firestore profile sync failed:', cloudError);
+    }
+
     enterApp();
-    showToast(`Signed in with ${capitalize(providerName)}`);
+
+    showToast(
+      cloudSaved
+        ? `Signed in with ${capitalize(providerName)} · Cloud connected`
+        : `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
+    );
   } catch (err) {
     console.error(err);
-    showModal('Sign-in Failed', err?.message || 'The authentication popup did not complete.', [{ label: 'Try Again', primary: true }], '!');
+
+    showModal(
+      'Sign-in Failed',
+      err?.message || 'The authentication popup did not complete.',
+      [{ label: 'Try Again', primary: true }],
+      '!'
+    );
   }
 }
 
