@@ -742,11 +742,11 @@ function returnFromJigsaw() {
 }
 
 class JigsawEngine {
-  static COLS = 7;
   static ROWS = 8;
+  static ROW_COUNTS = [7, 6, 7, 6, 7, 6, 7, 6];
   static PIECE_COUNT = 52;
-  static WIDTH = 1200;
-  static HEIGHT = 800;
+  static WIDTH = 1400;
+  static HEIGHT = 900;
 
   constructor(canvas, puzzle, image) {
     this.canvas = canvas;
@@ -786,44 +786,39 @@ class JigsawEngine {
 
   configureBoard() {
     const aspect = this.puzzle.width / this.puzzle.height;
-    let width = 780;
+    let width = 760;
     let height = width / aspect;
-    if (height > 650) { height = 650; width = height * aspect; }
+    if (height > 620) { height = 620; width = height * aspect; }
     this.board = { x: (JigsawEngine.WIDTH - width) / 2, y: (JigsawEngine.HEIGHT - height) / 2, width, height };
-    this.pieceWidth = width / JigsawEngine.COLS;
     this.pieceHeight = height / JigsawEngine.ROWS;
-    this.snapTolerance = Math.min(this.pieceWidth, this.pieceHeight) * 0.42;
+    this.snapTolerance = Math.min(width / 7, this.pieceHeight) * 0.42;
   }
 
   createPieces() {
-    // A 7×8 atomic grid covers the full artwork. Pairing two cells at each
-    // top/bottom corner removes four logical pieces: 56 - 4 = exactly 52.
-    const vertical = Array.from({ length: JigsawEngine.ROWS }, () =>
-      Array.from({ length: JigsawEngine.COLS - 1 }, () => Math.random() < .5 ? -1 : 1));
-    const horizontal = Array.from({ length: JigsawEngine.ROWS - 1 }, () =>
-      Array.from({ length: JigsawEngine.COLS }, () => Math.random() < .5 ? -1 : 1));
-    const topEdge = (row, col) => row === 0 ? 0 : -horizontal[row - 1][col];
-    const rightEdge = (row, col) => col === JigsawEngine.COLS - 1 ? 0 : vertical[row][col];
-    const bottomEdge = (row, col) => row === JigsawEngine.ROWS - 1 ? 0 : horizontal[row][col];
-    const leftEdge = (row, col) => col === 0 ? 0 : -vertical[row][col - 1];
+    // Alternating full-width rows create 7+6+7+6+7+6+7+6 = exactly 52.
+    // Each shared horizontal boundary is one continuous cached contour, so
+    // differently spaced vertical seams never create gaps or overlaps.
+    this.horizontalContours = Array.from({ length: JigsawEngine.ROWS - 1 }, (_, boundary) => ({
+      signs: Array.from({ length: 7 }, (__, segment) => ((boundary + segment) % 2 ? -1 : 1) * (Math.random() < .72 ? 1 : -1)),
+      depths: Array.from({ length: 7 }, (__, segment) => this.pieceHeight * (0.14 + ((boundary + segment) % 3) * 0.018)),
+    }));
+    const vertical = JigsawEngine.ROW_COUNTS.map((count) =>
+      Array.from({ length: count - 1 }, () => Math.random() < .5 ? -1 : 1));
     let id = 0;
     for (let row = 0; row < JigsawEngine.ROWS; row += 1) {
-      for (let col = 0; col < JigsawEngine.COLS; col += 1) {
-        const isPairedEdgePiece = (row === 0 || row === JigsawEngine.ROWS - 1) && (col === 0 || col === 5);
-        const cellSpan = isPairedEdgePiece ? 2 : 1;
-        const targetX = this.board.x + col * this.pieceWidth;
+      const count = JigsawEngine.ROW_COUNTS[row];
+      const width = this.board.width / count;
+      for (let col = 0; col < count; col += 1) {
+        const targetX = this.board.x + col * width;
         const targetY = this.board.y + row * this.pieceHeight;
         const edges = {
-          top: Array.from({ length: cellSpan }, (_, offset) => topEdge(row, col + offset)),
-          right: rightEdge(row, col + cellSpan - 1),
-          bottom: Array.from({ length: cellSpan }, (_, offset) => bottomEdge(row, col + offset)),
-          left: leftEdge(row, col),
+          right: col === count - 1 ? 0 : vertical[row][col],
+          left: col === 0 ? 0 : -vertical[row][col - 1],
         };
-        const piece = { id, row, col, cellSpan, targetX, targetY, x: 0, y: 0, edges, placed: false, groupId: id };
+        const piece = { id, row, col, targetX, targetY, width, x: 0, y: 0, edges, placed: false, groupId: id };
         piece.path = this.makePiecePath(piece);
         this.pieces.push(piece);
         id += 1;
-        if (isPairedEdgePiece) col += 1;
       }
     }
     if (this.pieces.length !== JigsawEngine.PIECE_COUNT) throw new Error('Easy Jigsaw must contain exactly 52 pieces.');
@@ -831,15 +826,36 @@ class JigsawEngine {
 
   makePiecePath(piece) {
     const path = new Path2D();
-    const x = piece.targetX, y = piece.targetY, w = this.pieceWidth, h = this.pieceHeight;
+    const x = piece.targetX, w = piece.width, h = this.pieceHeight;
     const depth = Math.min(w, h) * (0.17 + ((piece.id % 3) * 0.018));
-    path.moveTo(x, y);
-    for (let offset = 0; offset < piece.cellSpan; offset += 1) this.addEdge(path, x + offset * w, y, x + (offset + 1) * w, y, 0, -1, piece.edges.top[offset], depth);
-    this.addEdge(path, x + piece.cellSpan * w, y, x + piece.cellSpan * w, y + h, 1, 0, piece.edges.right, depth);
-    for (let offset = piece.cellSpan - 1; offset >= 0; offset -= 1) this.addEdge(path, x + (offset + 1) * w, y + h, x + offset * w, y + h, 0, 1, piece.edges.bottom[offset], depth);
-    this.addEdge(path, x, y + h, x, y, -1, 0, piece.edges.left, depth);
+    path.moveTo(x, this.horizontalBoundaryY(piece.row - 1, x));
+    this.addHorizontalBoundary(path, piece.row - 1, x, x + w);
+    this.addEdge(path, x + w, this.horizontalBoundaryY(piece.row - 1, x + w), x + w, this.horizontalBoundaryY(piece.row, x + w), 1, 0, piece.edges.right, depth);
+    this.addHorizontalBoundary(path, piece.row, x + w, x);
+    this.addEdge(path, x, this.horizontalBoundaryY(piece.row, x), x, this.horizontalBoundaryY(piece.row - 1, x), -1, 0, piece.edges.left, depth);
     path.closePath();
     return path;
+  }
+
+  horizontalBoundaryY(boundary, x) {
+    const baseY = this.board.y + (boundary + 1) * this.pieceHeight;
+    if (boundary < 0 || boundary >= JigsawEngine.ROWS - 1) return baseY;
+    const local = Math.max(0, Math.min(this.board.width, x - this.board.x));
+    const segmentWidth = this.board.width / 7;
+    const segment = Math.min(6, Math.floor(local / segmentWidth));
+    const progress = (local - segment * segmentWidth) / segmentWidth;
+    const contour = this.horizontalContours[boundary];
+    const tabProgress = Math.max(0, Math.min(1, (progress - .27) / .46));
+    const tabProfile = progress < .27 || progress > .73 ? 0 : Math.sin(Math.PI * tabProgress) ** 2;
+    return baseY + contour.signs[segment] * contour.depths[segment] * tabProfile;
+  }
+
+  addHorizontalBoundary(path, boundary, fromX, toX) {
+    const steps = Math.max(12, Math.ceil(Math.abs(toX - fromX) / 7));
+    for (let step = 1; step <= steps; step += 1) {
+      const x = fromX + (toX - fromX) * (step / steps);
+      path.lineTo(x, this.horizontalBoundaryY(boundary, x));
+    }
   }
 
   addEdge(path, x1, y1, x2, y2, nx, ny, edge, depth) {
@@ -853,19 +869,30 @@ class JigsawEngine {
   }
 
   scatterPieces() {
-    const slots = [];
-    const slotW = JigsawEngine.WIDTH / JigsawEngine.COLS;
-    const slotH = JigsawEngine.HEIGHT / JigsawEngine.ROWS;
-    for (let row = 0; row < JigsawEngine.ROWS; row += 1) for (let col = 0; col < JigsawEngine.COLS; col += 1) {
-      slots.push({ x: col * slotW + (slotW - this.pieceWidth) / 2, y: row * slotH + (slotH - this.pieceHeight) / 2 });
-    }
-    shuffle(slots);
-    this.pieces.forEach((piece, index) => {
-      const slot = slots[index];
-      const visualWidth = this.pieceWidth * piece.cellSpan;
-      piece.x = Math.min(JigsawEngine.WIDTH - visualWidth, slot.x + (Math.random() - .5) * Math.max(4, slotW - visualWidth) * .5);
-      piece.y = slot.y + (Math.random() - .5) * Math.max(4, slotH - this.pieceHeight) * .5;
-      if (Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY) <= this.snapTolerance) piece.x = (piece.x + slotW * 2) % (JigsawEngine.WIDTH - this.pieceWidth);
+    const margin = 24;
+    const gap = 24;
+    const zones = [
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: JigsawEngine.WIDTH - (this.board.x + this.board.width + gap) - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: JigsawEngine.HEIGHT - (this.board.y + this.board.height + gap) - margin },
+    ].filter((zone) => zone.width > 50 && zone.height > 50);
+    const centers = [];
+    shuffle(this.pieces.slice()).forEach((piece, index) => {
+      let candidate = null;
+      for (let attempt = 0; attempt < 70; attempt += 1) {
+        const zone = zones[(index + Math.floor(Math.random() * zones.length)) % zones.length];
+        const maxX = Math.max(zone.x, zone.x + zone.width - piece.width);
+        const maxY = Math.max(zone.y, zone.y + zone.height - this.pieceHeight);
+        const x = zone.x + Math.random() * (maxX - zone.x);
+        const y = zone.y + Math.random() * (maxY - zone.y);
+        const center = { x: x + piece.width / 2, y: y + this.pieceHeight / 2 };
+        candidate = { x, y, center };
+        if (centers.every((prior) => Math.hypot(center.x - prior.x, center.y - prior.y) > Math.min(piece.width, this.pieceHeight) * .48)) break;
+      }
+      piece.x = Math.max(margin, Math.min(JigsawEngine.WIDTH - piece.width - margin, candidate.x));
+      piece.y = Math.max(margin, Math.min(JigsawEngine.HEIGHT - this.pieceHeight - margin, candidate.y));
+      centers.push(candidate.center);
     });
     this.drawOrder = shuffle(this.pieces.map((piece) => piece.id));
   }
@@ -953,9 +980,17 @@ class JigsawEngine {
     const ctx = this.ctx;
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
     ctx.clearRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
-    ctx.fillStyle = '#121216'; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
-    ctx.fillStyle = '#1b1b20'; ctx.fillRect(this.board.x, this.board.y, this.board.width, this.board.height);
-    ctx.strokeStyle = '#555560'; ctx.lineWidth = 3; ctx.setLineDash([10, 9]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
+    const surface = ctx.createRadialGradient(JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 80, JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 760);
+    surface.addColorStop(0, '#17171c'); surface.addColorStop(1, '#0e0e11');
+    ctx.fillStyle = surface; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
+    ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
+    ctx.restore();
+    ctx.fillStyle = '#17171c'; ctx.fillRect(this.board.x, this.board.y, this.board.width, this.board.height);
+    ctx.strokeStyle = '#62626e'; ctx.lineWidth = 3; ctx.setLineDash([10, 9]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
+    ctx.fillStyle = '#777782'; ctx.font = '800 13px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('ASSEMBLY AREA', this.board.x + this.board.width / 2, this.board.y - 20);
     if (this.previewing || this.completed) {
       ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
       ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
