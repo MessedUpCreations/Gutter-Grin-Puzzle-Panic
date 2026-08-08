@@ -819,6 +819,10 @@ class JigsawEngine {
         const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id };
         piece.path = this.makePiecePath(piece);
         piece.visualBounds = this.calculateVisualBounds(piece);
+        piece.snapTolerance = Math.min(
+          piece.visualBounds.maxX - piece.visualBounds.minX,
+          piece.visualBounds.maxY - piece.visualBounds.minY
+        ) * .42;
         this.pieces.push(piece);
         id += 1;
       }
@@ -979,25 +983,45 @@ class JigsawEngine {
 
   pointerMove(event) {
     if (!this.drag) return;
-    const point = this.canvasPoint(event);
-    const position = this.clampPiecePosition(this.drag.piece, point.x - this.drag.offsetX, point.y - this.drag.offsetY);
-    this.drag.piece.x = position.x;
-    this.drag.piece.y = position.y;
+    const point = this.updateDraggedPiece(event);
     if (Math.hypot(point.x - this.drag.startX, point.y - this.drag.startY) > 6) this.drag.moved = true;
     this.requestRender();
   }
 
+  updateDraggedPiece(event) {
+    const point = this.canvasPoint(event);
+    const position = this.clampPiecePosition(this.drag.piece, point.x - this.drag.offsetX, point.y - this.drag.offsetY);
+    this.drag.piece.x = position.x;
+    this.drag.piece.y = position.y;
+    return point;
+  }
+
+  snapDistance(piece) {
+    return Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY);
+  }
+
+  tryPlacePiece(piece) {
+    if (piece.placed || this.snapDistance(piece) > piece.snapTolerance) return false;
+    piece.x = piece.targetX;
+    piece.y = piece.targetY;
+    piece.placed = true;
+    this.placed += 1;
+    $('#jigsawPlacedText').textContent = `${this.placed} / ${JigsawEngine.PIECE_COUNT}`;
+    return true;
+  }
+
   pointerUp(event) {
     if (!this.drag) return;
+    const cancelled = event.type === 'pointercancel';
+    if (!cancelled) {
+      const releasePoint = this.updateDraggedPiece(event);
+      if (Math.hypot(releasePoint.x - this.drag.startX, releasePoint.y - this.drag.startY) > 6) this.drag.moved = true;
+    }
     const { piece, moved } = this.drag;
     if (moved) {
       this.moves += 1;
       $('#jigsawMoveText').textContent = String(this.moves);
-      if (Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY) <= this.snapTolerance) {
-        piece.x = piece.targetX; piece.y = piece.targetY; piece.placed = true;
-        this.placed += 1;
-        $('#jigsawPlacedText').textContent = `${this.placed} / ${JigsawEngine.PIECE_COUNT}`;
-      }
+      if (!cancelled) this.tryPlacePiece(piece);
     }
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
     this.drag = null;
