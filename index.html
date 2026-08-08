@@ -83,14 +83,14 @@
       </header>
       <main class="jigsaw-prep">
         <div class="prep-copy">
-          <p class="eyebrow">CLASSIC JIGSAW · EASY</p>
+          <p class="eyebrow" id="jigsawPrepMode">CLASSIC JIGSAW · EASY</p>
           <h2 id="jigsawPrepTitle">Puzzle</h2>
           <div class="prep-stats">
-            <span><strong>52</strong><small>PIECES</small></span>
-            <span><strong>+2</strong><small>BASE COINS</small></span>
-            <span><strong>+1–5</strong><small>TIME BONUS</small></span>
+            <span><strong id="jigsawPrepPieces">52</strong><small>PIECES</small></span>
+            <span><strong id="jigsawPrepReward">+2</strong><small>BASE COINS</small></span>
+            <span><strong id="jigsawPrepBonus">+1–5</strong><small>TIME BONUS</small></span>
           </div>
-          <p>Finish within 5 minutes for +5 bonus coins. The bonus slides down to +1 coin at 15 minutes.</p>
+          <p id="jigsawPrepBonusCopy">Finish within 5 minutes for +5 bonus coins. The bonus slides down to +1 coin at 15 minutes.</p>
         </div>
         <img id="jigsawPrepImage" class="prep-image" alt="Completed puzzle preview" />
         <button id="startJigsawBtn" class="btn primary xl">Start Puzzle</button>
@@ -100,7 +100,7 @@
     <section id="jigsawScreen" class="screen jigsaw-screen">
       <header class="game-topbar">
         <button id="exitJigsawBtn" class="icon-btn" aria-label="Exit Jigsaw">←</button>
-        <div class="game-title-wrap"><strong id="jigsawTitle">Classic Jigsaw</strong><small>Easy · 52 pieces</small></div>
+        <div class="game-title-wrap"><strong id="jigsawTitle">Classic Jigsaw</strong><small id="jigsawDifficultyText">Easy · 52 pieces</small></div>
         <button id="jigsawPreviewBtn" class="icon-btn" aria-label="Preview completed artwork">👁</button>
       </header>
       <div class="game-stats jigsaw-stats">

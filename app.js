@@ -409,8 +409,8 @@ function renderDifficultySelection() {
   }));
   $('#playSelectedBtn').addEventListener('click', () => {
     if (state.selectedMode === 'jigsaw') {
-      if (state.difficulty === 'easy') return showJigsawPreparation(puzzle);
-      showModal('Higher Piece Counts Coming Next', `${difficulties[state.difficulty].pieces.toLocaleString()}-piece Classic Jigsaw support is being enabled in the next engine stage. Easy · 52 pieces is playable now.`, [{ label: 'Back to Difficulties', primary: true }], '🧩');
+      if (state.difficulty === 'easy' || state.difficulty === 'normal') return showJigsawPreparation(puzzle);
+      showModal('Higher Piece Counts Coming Next', `${difficulties[state.difficulty].pieces.toLocaleString()}-piece Classic Jigsaw support is being enabled in the next engine stage. Easy and Normal are playable now.`, [{ label: 'Back to Difficulties', primary: true }], '🧩');
       return;
     }
     startGame(puzzle);
@@ -668,8 +668,17 @@ function reshuffle() {
 
 function showJigsawPreparation(puzzle) {
   clearInterval(timerHandle);
-  jigsawGame = { puzzle, started: false };
+  const difficulty = state.difficulty === 'normal' ? 'normal' : 'easy';
+  const config = JIGSAW_DIFFICULTIES[difficulty];
+  jigsawGame = { puzzle, difficulty, started: false };
   $('#jigsawPrepTitle').textContent = puzzle.title;
+  $('#jigsawPrepMode').textContent = `CLASSIC JIGSAW · ${config.label.toUpperCase()}`;
+  $('#jigsawPrepPieces').textContent = config.pieces.toLocaleString();
+  $('#jigsawPrepReward').textContent = `+${config.reward}`;
+  $('#jigsawPrepBonus').textContent = `+${config.timeBonus.minCoins}–${config.timeBonus.maxCoins}`;
+  $('#jigsawPrepBonusCopy').textContent = difficulty === 'easy'
+    ? 'Finish within 5 minutes for +5 bonus coins. The bonus slides down to +1 coin at 15 minutes.'
+    : 'Finish within 15 minutes for +10 bonus coins. The bonus slides down to +5 coins at 30 minutes.';
   $('#jigsawPrepImage').src = puzzle.image;
   $('#jigsawPrepImage').alt = `${puzzle.title} completed artwork`;
   $('#prepCoinCount').textContent = Number(state.coins || 0).toLocaleString();
@@ -678,6 +687,7 @@ function showJigsawPreparation(puzzle) {
 
 async function startJigsaw() {
   const puzzle = jigsawGame?.puzzle;
+  const difficulty = jigsawGame?.difficulty || 'easy';
   if (!puzzle) return;
   const image = new Image();
   image.src = puzzle.image;
@@ -685,16 +695,22 @@ async function startJigsaw() {
   if (!image.complete || !image.naturalWidth) {
     return showModal('Artwork Could Not Load', 'Please check your connection and try starting this puzzle again.', [{ label: 'Back', primary: true }], '!');
   }
-  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image);
+  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image, difficulty);
   $('#jigsawTitle').textContent = puzzle.title;
   $('#jigsawTimerText').textContent = '00:00';
-  $('#jigsawPlacedText').textContent = '0 / 52';
+  $('#jigsawDifficultyText').textContent = `${jigsawGame.config.label} · ${jigsawGame.pieceCount.toLocaleString()} pieces`;
+  $('#jigsawPlacedText').textContent = `0 / ${jigsawGame.pieceCount.toLocaleString()}`;
   $('#jigsawMoveText').textContent = '0';
   showScreen(jigsawScreen);
   jigsawGame.start();
 }
 
-function jigsawTimeBonus(seconds) {
+function jigsawTimeBonus(difficulty, seconds) {
+  if (difficulty === 'normal') {
+    if (seconds <= 900) return 10;
+    if (seconds > 1800) return 0;
+    return Math.max(5, Math.min(10, Math.ceil(5 + (5 * (1800 - seconds)) / 900)));
+  }
   if (seconds <= 300) return 5;
   if (seconds > 900) return 0;
   return Math.max(1, Math.min(5, Math.ceil(1 + (4 * (900 - seconds)) / 600)));
@@ -706,10 +722,10 @@ function finishJigsaw(engine) {
   engine.stopTimer();
   engine.renderCompleted();
   const seconds = engine.seconds;
-  const baseReward = JIGSAW_DIFFICULTIES.easy.reward;
-  const timeBonus = jigsawTimeBonus(seconds);
+  const baseReward = engine.config.reward;
+  const timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
   const reward = baseReward + timeBonus;
-  const key = completionKey('jigsaw', engine.puzzle.id, 'easy');
+  const key = completionKey('jigsaw', engine.puzzle.id, engine.difficulty);
   const prior = state.completed[key];
   state.completed[key] = {
     bestSeconds: Number.isFinite(prior?.bestSeconds) ? Math.min(prior.bestSeconds, seconds) : seconds,
@@ -726,7 +742,7 @@ function finishJigsaw(engine) {
     `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
     [
       { label: 'Back to Puzzles', action: returnFromJigsaw },
-      { label: 'Play Again', primary: true, action: () => showJigsawPreparation(engine.puzzle) },
+      { label: 'Play Again', primary: true, action: () => { state.difficulty = engine.difficulty; showJigsawPreparation(engine.puzzle); } },
     ],
     '✓'
   ), 350);
@@ -742,19 +758,20 @@ function returnFromJigsaw() {
 }
 
 class JigsawEngine {
-  static ROWS = 8;
-  static ROW_COUNTS = [7, 6, 7, 6, 7, 6, 7, 6];
-  static PIECE_COUNT = 52;
-  static WIDTH = 1400;
-  static HEIGHT = 900;
+  static EASY_ROW_COUNTS = [7, 6, 7, 6, 7, 6, 7, 6];
   static MIN_ZOOM = .4;
   static MAX_ZOOM = 3;
 
-  constructor(canvas, puzzle, image) {
+  constructor(canvas, puzzle, image, difficulty = 'easy') {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.puzzle = puzzle;
     this.image = image;
+    this.difficulty = difficulty === 'normal' ? 'normal' : 'easy';
+    this.config = JIGSAW_DIFFICULTIES[this.difficulty];
+    this.pieceCount = this.config.pieces;
+    this.worldWidth = this.difficulty === 'normal' ? 2400 : 1400;
+    this.worldHeight = this.difficulty === 'normal' ? 1600 : 900;
     this.pieces = [];
     this.groups = new Map();
     this.neighbors = [];
@@ -767,7 +784,8 @@ class JigsawEngine {
     this.completed = false;
     this.previewing = false;
     this.framePending = false;
-    this.camera = { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2, zoom: 1 };
+    this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
+    this.metrics = { geometryMs: 0, setupMs: 0, firstRenderMs: null };
     this.activePointers = new Map();
     this.pan = null;
     this.pinch = null;
@@ -782,12 +800,17 @@ class JigsawEngine {
   }
 
   start() {
+    const setupStarted = performance.now();
     this.configureBoard();
+    const geometryStarted = performance.now();
     this.createPieces();
+    this.metrics.geometryMs = performance.now() - geometryStarted;
     this.scatterPieces();
+    this.metrics.setupMs = performance.now() - setupStarted;
     this.bindEvents();
     this.resizeCanvas();
     this.startedAt = Date.now();
+    this.firstRenderStartedAt = performance.now();
     this.timer = setInterval(() => {
       if (this.completed) return;
       this.seconds = Math.floor((Date.now() - this.startedAt) / 1000);
@@ -798,27 +821,59 @@ class JigsawEngine {
 
   configureBoard() {
     const aspect = this.puzzle.width / this.puzzle.height;
-    let width = 760;
+    let width = this.difficulty === 'normal' ? 1260 : 760;
     let height = width / aspect;
-    if (height > 620) { height = 620; width = height * aspect; }
-    this.board = { x: (JigsawEngine.WIDTH - width) / 2, y: (JigsawEngine.HEIGHT - height) / 2, width, height };
-    this.pieceHeight = height / JigsawEngine.ROWS;
-    this.snapTolerance = Math.min(width / 7, this.pieceHeight) * 0.42;
+    const maxHeight = this.difficulty === 'normal' ? 1100 : 620;
+    if (height > maxHeight) { height = maxHeight; width = height * aspect; }
+    this.board = { x: (this.worldWidth - width) / 2, y: (this.worldHeight - height) / 2, width, height };
+    if (this.difficulty === 'normal') {
+      const candidates = [{ cols: 18, rows: 14 }, { cols: 14, rows: 18 }];
+      this.topology = candidates.reduce((best, candidate) => {
+        const pieceAspect = aspect * candidate.rows / candidate.cols;
+        const error = Math.abs(Math.log(pieceAspect));
+        return !best || error < best.error ? { ...candidate, error } : best;
+      }, null);
+      this.rows = this.topology.rows;
+      this.cols = this.topology.cols;
+    } else {
+      this.rows = JigsawEngine.EASY_ROW_COUNTS.length;
+      this.cols = null;
+      this.topology = { rowCounts: [...JigsawEngine.EASY_ROW_COUNTS] };
+    }
+    this.pieceHeight = height / this.rows;
   }
 
   createPieces() {
+    this.pieces = [];
+    if (this.difficulty === 'normal') this.createRegularPieces();
+    else this.createEasyPieces();
+    if (this.pieces.length !== this.pieceCount) throw new Error(`${this.config.label} Jigsaw must contain exactly ${this.pieceCount} pieces.`);
+    this.initializeGroupsAndNeighbors();
+  }
+
+  finishPieceRecord(piece) {
+    piece.path = this.difficulty === 'normal' ? this.makeRegularPiecePath(piece) : this.makePiecePath(piece);
+    piece.visualBounds = this.difficulty === 'normal' ? this.calculateRegularVisualBounds(piece) : this.calculateVisualBounds(piece);
+    piece.snapTolerance = Math.min(
+      piece.visualBounds.maxX - piece.visualBounds.minX,
+      piece.visualBounds.maxY - piece.visualBounds.minY
+    ) * .42;
+    this.pieces.push(piece);
+  }
+
+  createEasyPieces() {
     // Alternating full-width rows create 7+6+7+6+7+6+7+6 = exactly 52.
     // Each shared horizontal boundary is one continuous cached contour, so
     // differently spaced vertical seams never create gaps or overlaps.
-    this.horizontalContours = Array.from({ length: JigsawEngine.ROWS - 1 }, (_, boundary) => ({
+    this.horizontalContours = Array.from({ length: this.rows - 1 }, (_, boundary) => ({
       signs: Array.from({ length: 7 }, (__, segment) => ((boundary + segment) % 2 ? -1 : 1) * (Math.random() < .72 ? 1 : -1)),
       depths: Array.from({ length: 7 }, (__, segment) => this.pieceHeight * (0.14 + ((boundary + segment) % 3) * 0.018)),
     }));
-    const vertical = JigsawEngine.ROW_COUNTS.map((count) =>
+    const vertical = this.topology.rowCounts.map((count) =>
       Array.from({ length: count - 1 }, () => Math.random() < .5 ? -1 : 1));
     let id = 0;
-    for (let row = 0; row < JigsawEngine.ROWS; row += 1) {
-      const count = JigsawEngine.ROW_COUNTS[row];
+    for (let row = 0; row < this.rows; row += 1) {
+      const count = this.topology.rowCounts[row];
       const width = this.board.width / count;
       for (let col = 0; col < count; col += 1) {
         const targetX = this.board.x + col * width;
@@ -829,18 +884,34 @@ class JigsawEngine {
         };
         const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * 0.018));
         const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id };
-        piece.path = this.makePiecePath(piece);
-        piece.visualBounds = this.calculateVisualBounds(piece);
-        piece.snapTolerance = Math.min(
-          piece.visualBounds.maxX - piece.visualBounds.minX,
-          piece.visualBounds.maxY - piece.visualBounds.minY
-        ) * .42;
-        this.pieces.push(piece);
+        this.finishPieceRecord(piece);
         id += 1;
       }
     }
-    if (this.pieces.length !== JigsawEngine.PIECE_COUNT) throw new Error('Easy Jigsaw must contain exactly 52 pieces.');
-    this.initializeGroupsAndNeighbors();
+  }
+
+  createRegularPieces() {
+    const width = this.board.width / this.cols;
+    const vertical = Array.from({ length: this.rows }, () => Array.from({ length: this.cols - 1 }, () => Math.random() < .5 ? -1 : 1));
+    const horizontal = Array.from({ length: this.rows - 1 }, () => Array.from({ length: this.cols }, () => Math.random() < .5 ? -1 : 1));
+    let id = 0;
+    for (let row = 0; row < this.rows; row += 1) for (let col = 0; col < this.cols; col += 1) {
+      const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * .018));
+      const piece = {
+        id, row, col, width, tabDepth,
+        targetX: this.board.x + col * width,
+        targetY: this.board.y + row * this.pieceHeight,
+        x: 0, y: 0, placed: false, groupId: id,
+        edges: {
+          top: row === 0 ? 0 : -horizontal[row - 1][col],
+          right: col === this.cols - 1 ? 0 : vertical[row][col],
+          bottom: row === this.rows - 1 ? 0 : horizontal[row][col],
+          left: col === 0 ? 0 : -vertical[row][col - 1],
+        },
+      };
+      this.finishPieceRecord(piece);
+      id += 1;
+    }
   }
 
   initializeGroupsAndNeighbors() {
@@ -848,15 +919,19 @@ class JigsawEngine {
     this.neighbors = this.pieces.map(() => new Set());
     this.pieces.forEach((piece) => this.groups.set(piece.id, new Set([piece.id])));
     const connect = (a, b) => { this.neighbors[a.id].add(b.id); this.neighbors[b.id].add(a.id); };
-    const rows = Array.from({ length: JigsawEngine.ROWS }, (_, row) => this.pieces.filter((piece) => piece.row === row));
+    const rows = Array.from({ length: this.rows }, (_, row) => this.pieces.filter((piece) => piece.row === row));
     rows.forEach((rowPieces) => {
       for (let index = 0; index < rowPieces.length - 1; index += 1) connect(rowPieces[index], rowPieces[index + 1]);
     });
-    for (let row = 0; row < JigsawEngine.ROWS - 1; row += 1) {
-      rows[row].forEach((upper) => rows[row + 1].forEach((lower) => {
-        const sharedWidth = Math.min(upper.targetX + upper.width, lower.targetX + lower.width) - Math.max(upper.targetX, lower.targetX);
-        if (sharedWidth > .001) connect(upper, lower);
-      }));
+    for (let row = 0; row < this.rows - 1; row += 1) {
+      if (this.difficulty === 'normal') {
+        for (let col = 0; col < this.cols; col += 1) connect(rows[row][col], rows[row + 1][col]);
+      } else {
+        rows[row].forEach((upper) => rows[row + 1].forEach((lower) => {
+          const sharedWidth = Math.min(upper.targetX + upper.width, lower.targetX + lower.width) - Math.max(upper.targetX, lower.targetX);
+          if (sharedWidth > .001) connect(upper, lower);
+        }));
+      }
     }
   }
 
@@ -871,6 +946,27 @@ class JigsawEngine {
     this.addEdge(path, x, this.horizontalBoundaryY(piece.row, x), x, this.horizontalBoundaryY(piece.row - 1, x), -1, 0, piece.edges.left, depth);
     path.closePath();
     return path;
+  }
+
+  makeRegularPiecePath(piece) {
+    const path = new Path2D();
+    const x = piece.targetX, y = piece.targetY, w = piece.width, h = this.pieceHeight, depth = piece.tabDepth;
+    path.moveTo(x, y);
+    this.addEdge(path, x, y, x + w, y, 0, -1, piece.edges.top, depth);
+    this.addEdge(path, x + w, y, x + w, y + h, 1, 0, piece.edges.right, depth);
+    this.addEdge(path, x + w, y + h, x, y + h, 0, 1, piece.edges.bottom, depth);
+    this.addEdge(path, x, y + h, x, y, -1, 0, piece.edges.left, depth);
+    path.closePath();
+    return path;
+  }
+
+  calculateRegularVisualBounds(piece) {
+    return {
+      minX: piece.edges.left === 1 ? -piece.tabDepth : 0,
+      maxX: piece.width + (piece.edges.right === 1 ? piece.tabDepth : 0),
+      minY: piece.edges.top === 1 ? -piece.tabDepth : 0,
+      maxY: this.pieceHeight + (piece.edges.bottom === 1 ? piece.tabDepth : 0),
+    };
   }
 
   calculateVisualBounds(piece) {
@@ -897,13 +993,33 @@ class JigsawEngine {
   clampPiecePosition(piece, x, y, margin = 8) {
     const bounds = piece.visualBounds;
     return {
-      x: Math.max(margin - bounds.minX, Math.min(JigsawEngine.WIDTH - margin - bounds.maxX, x)),
-      y: Math.max(margin - bounds.minY, Math.min(JigsawEngine.HEIGHT - margin - bounds.maxY, y)),
+      x: Math.max(margin - bounds.minX, Math.min(this.worldWidth - margin - bounds.maxX, x)),
+      y: Math.max(margin - bounds.minY, Math.min(this.worldHeight - margin - bounds.maxY, y)),
     };
   }
 
   groupMembers(groupId) {
     return [...(this.groups.get(groupId) || [])].map((id) => this.pieces[id]);
+  }
+
+  pieceWorldBounds(piece) {
+    return {
+      minX: piece.x + piece.visualBounds.minX,
+      maxX: piece.x + piece.visualBounds.maxX,
+      minY: piece.y + piece.visualBounds.minY,
+      maxY: piece.y + piece.visualBounds.maxY,
+    };
+  }
+
+  visibleWorldBounds(padding = 0) {
+    const halfWidth = this.worldWidth / (2 * this.camera.zoom);
+    const halfHeight = this.worldHeight / (2 * this.camera.zoom);
+    return {
+      minX: this.camera.x - halfWidth - padding,
+      maxX: this.camera.x + halfWidth + padding,
+      minY: this.camera.y - halfHeight - padding,
+      maxY: this.camera.y + halfHeight + padding,
+    };
   }
 
   groupBounds(groupId, positions = null) {
@@ -922,8 +1038,8 @@ class JigsawEngine {
   clampGroupTranslation(groupId, dx, dy, positions = null, margin = 8) {
     const bounds = this.groupBounds(groupId, positions);
     return {
-      dx: Math.max(margin - bounds.minX, Math.min(JigsawEngine.WIDTH - margin - bounds.maxX, dx)),
-      dy: Math.max(margin - bounds.minY, Math.min(JigsawEngine.HEIGHT - margin - bounds.maxY, dy)),
+      dx: Math.max(margin - bounds.minX, Math.min(this.worldWidth - margin - bounds.maxX, dx)),
+      dy: Math.max(margin - bounds.minY, Math.min(this.worldHeight - margin - bounds.maxY, dy)),
     };
   }
 
@@ -938,7 +1054,7 @@ class JigsawEngine {
 
   horizontalBoundaryY(boundary, x) {
     const baseY = this.board.y + (boundary + 1) * this.pieceHeight;
-    if (boundary < 0 || boundary >= JigsawEngine.ROWS - 1) return baseY;
+    if (boundary < 0 || boundary >= this.rows - 1) return baseY;
     const local = Math.max(0, Math.min(this.board.width, x - this.board.x));
     const segmentWidth = this.board.width / 7;
     const segment = Math.min(6, Math.floor(local / segmentWidth));
@@ -971,10 +1087,10 @@ class JigsawEngine {
     const margin = 24;
     const gap = 24;
     const zones = [
-      { x: margin, y: margin, width: this.board.x - gap - margin, height: JigsawEngine.HEIGHT - margin * 2 },
-      { x: this.board.x + this.board.width + gap, y: margin, width: JigsawEngine.WIDTH - (this.board.x + this.board.width + gap) - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: this.worldWidth - (this.board.x + this.board.width + gap) - margin, height: this.worldHeight - margin * 2 },
       { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
-      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: JigsawEngine.HEIGHT - (this.board.y + this.board.height + gap) - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: this.worldHeight - (this.board.y + this.board.height + gap) - margin },
     ].filter((zone) => zone.width > 50 && zone.height > 50);
     const centers = [];
     shuffle(pieces.slice()).forEach((piece, index) => {
@@ -1013,15 +1129,15 @@ class JigsawEngine {
   resizeCanvas() {
     const rect = this.canvas.getBoundingClientRect();
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    const cssAspect = JigsawEngine.WIDTH / JigsawEngine.HEIGHT;
+    const cssAspect = this.worldWidth / this.worldHeight;
     let width = rect.width, height = width / cssAspect;
     if (height > rect.height) { height = rect.height; width = height * cssAspect; }
     this.canvas.style.width = `${Math.floor(width)}px`;
     this.canvas.style.height = `${Math.floor(height)}px`;
     this.canvas.width = Math.max(1, Math.floor(width * ratio));
     this.canvas.height = Math.max(1, Math.floor(height * ratio));
-    this.scaleX = width / JigsawEngine.WIDTH;
-    this.scaleY = height / JigsawEngine.HEIGHT;
+    this.scaleX = width / this.worldWidth;
+    this.scaleY = height / this.worldHeight;
     this.pixelRatio = ratio;
   }
 
@@ -1032,15 +1148,15 @@ class JigsawEngine {
 
   worldToScreen(point) {
     return {
-      x: (point.x - this.camera.x) * this.camera.zoom + JigsawEngine.WIDTH / 2,
-      y: (point.y - this.camera.y) * this.camera.zoom + JigsawEngine.HEIGHT / 2,
+      x: (point.x - this.camera.x) * this.camera.zoom + this.worldWidth / 2,
+      y: (point.y - this.camera.y) * this.camera.zoom + this.worldHeight / 2,
     };
   }
 
   screenToWorld(point) {
     return {
-      x: this.camera.x + (point.x - JigsawEngine.WIDTH / 2) / this.camera.zoom,
-      y: this.camera.y + (point.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom,
+      x: this.camera.x + (point.x - this.worldWidth / 2) / this.camera.zoom,
+      y: this.camera.y + (point.y - this.worldHeight / 2) / this.camera.zoom,
     };
   }
 
@@ -1050,25 +1166,25 @@ class JigsawEngine {
 
   constrainCamera() {
     const overscroll = 160;
-    const halfWidth = JigsawEngine.WIDTH / (2 * this.camera.zoom);
-    const halfHeight = JigsawEngine.HEIGHT / (2 * this.camera.zoom);
-    const minX = -overscroll + halfWidth, maxX = JigsawEngine.WIDTH + overscroll - halfWidth;
-    const minY = -overscroll + halfHeight, maxY = JigsawEngine.HEIGHT + overscroll - halfHeight;
-    this.camera.x = minX > maxX ? JigsawEngine.WIDTH / 2 : Math.max(minX, Math.min(maxX, this.camera.x));
-    this.camera.y = minY > maxY ? JigsawEngine.HEIGHT / 2 : Math.max(minY, Math.min(maxY, this.camera.y));
+    const halfWidth = this.worldWidth / (2 * this.camera.zoom);
+    const halfHeight = this.worldHeight / (2 * this.camera.zoom);
+    const minX = -overscroll + halfWidth, maxX = this.worldWidth + overscroll - halfWidth;
+    const minY = -overscroll + halfHeight, maxY = this.worldHeight + overscroll - halfHeight;
+    this.camera.x = minX > maxX ? this.worldWidth / 2 : Math.max(minX, Math.min(maxX, this.camera.x));
+    this.camera.y = minY > maxY ? this.worldHeight / 2 : Math.max(minY, Math.min(maxY, this.camera.y));
   }
 
   setZoomAtScreenPoint(zoom, screenPoint) {
     const anchor = this.screenToWorld(screenPoint);
     this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, zoom));
-    this.camera.x = anchor.x - (screenPoint.x - JigsawEngine.WIDTH / 2) / this.camera.zoom;
-    this.camera.y = anchor.y - (screenPoint.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom;
+    this.camera.x = anchor.x - (screenPoint.x - this.worldWidth / 2) / this.camera.zoom;
+    this.camera.y = anchor.y - (screenPoint.y - this.worldHeight / 2) / this.camera.zoom;
     this.constrainCamera();
     this.requestRender();
   }
 
   zoomBy(factor) {
-    this.setZoomAtScreenPoint(this.camera.zoom * factor, { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2 });
+    this.setZoomAtScreenPoint(this.camera.zoom * factor, { x: this.worldWidth / 2, y: this.worldHeight / 2 });
   }
 
   wheel(event) {
@@ -1080,7 +1196,7 @@ class JigsawEngine {
   fitBoard() {
     const padding = 80;
     this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM,
-      Math.min((JigsawEngine.WIDTH - padding * 2) / this.board.width, (JigsawEngine.HEIGHT - padding * 2) / this.board.height)));
+      Math.min((this.worldWidth - padding * 2) / this.board.width, (this.worldHeight - padding * 2) / this.board.height)));
     this.camera.x = this.board.x + this.board.width / 2;
     this.camera.y = this.board.y + this.board.height / 2;
     this.constrainCamera();
@@ -1088,7 +1204,7 @@ class JigsawEngine {
   }
 
   resetView() {
-    this.camera = { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2, zoom: 1 };
+    this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
     this.requestRender();
   }
 
@@ -1106,6 +1222,8 @@ class JigsawEngine {
       for (let index = this.drawOrder.length - 1; index >= 0; index -= 1) {
         const piece = this.pieces[this.drawOrder[index]];
         if (piece.placed) continue;
+        const bounds = this.pieceWorldBounds(piece);
+        if (point.x < bounds.minX || point.x > bounds.maxX || point.y < bounds.minY || point.y > bounds.maxY) continue;
         const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
         if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
           const groupId = piece.groupId;
@@ -1167,8 +1285,8 @@ class JigsawEngine {
     const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
     const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
     this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, this.pinch.startZoom * distance / this.pinch.startDistance));
-    this.camera.x = this.pinch.anchorWorld.x - (midpoint.x - JigsawEngine.WIDTH / 2) / this.camera.zoom;
-    this.camera.y = this.pinch.anchorWorld.y - (midpoint.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom;
+    this.camera.x = this.pinch.anchorWorld.x - (midpoint.x - this.worldWidth / 2) / this.camera.zoom;
+    this.camera.y = this.pinch.anchorWorld.y - (midpoint.y - this.worldHeight / 2) / this.camera.zoom;
     this.constrainCamera();
     this.requestRender();
   }
@@ -1210,7 +1328,7 @@ class JigsawEngine {
       if (!piece.placed) { piece.placed = true; newlyPlaced += 1; }
     });
     this.placed += newlyPlaced;
-    $('#jigsawPlacedText').textContent = `${this.placed} / ${JigsawEngine.PIECE_COUNT}`;
+    $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
     return true;
   }
 
@@ -1302,7 +1420,7 @@ class JigsawEngine {
     this.drag = null;
     this.canvas.style.cursor = 'grab';
     this.requestRender();
-    if (this.placed === JigsawEngine.PIECE_COUNT) finishJigsaw(this);
+    if (this.placed === this.pieceCount) finishJigsaw(this);
   }
 
   gatherLoosePieces() {
@@ -1311,17 +1429,17 @@ class JigsawEngine {
     if (!looseGroupIds.length) return;
     const margin = 24, gap = 24;
     const zones = [
-      { x: margin, y: margin, width: this.board.x - gap - margin, height: JigsawEngine.HEIGHT - margin * 2 },
-      { x: this.board.x + this.board.width + gap, y: margin, width: JigsawEngine.WIDTH - (this.board.x + this.board.width + gap) - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: this.worldWidth - (this.board.x + this.board.width + gap) - margin, height: this.worldHeight - margin * 2 },
       { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
-      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: JigsawEngine.HEIGHT - (this.board.y + this.board.height + gap) - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: this.worldHeight - (this.board.y + this.board.height + gap) - margin },
     ].filter((zone) => zone.width > 50 && zone.height > 50);
     const centers = [];
     shuffle(looseGroupIds).forEach((groupId, index) => {
       const bounds = this.groupBounds(groupId);
       const width = bounds.maxX - bounds.minX, height = bounds.maxY - bounds.minY;
       const fittingZones = zones.filter((zone) => width <= zone.width && height <= zone.height);
-      const candidates = fittingZones.length ? fittingZones : [{ x: margin, y: margin, width: JigsawEngine.WIDTH - margin * 2, height: JigsawEngine.HEIGHT - margin * 2 }];
+      const candidates = fittingZones.length ? fittingZones : [{ x: margin, y: margin, width: this.worldWidth - margin * 2, height: this.worldHeight - margin * 2 }];
       let candidate;
       for (let attempt = 0; attempt < 70; attempt += 1) {
         const zone = candidates[(index + Math.floor(Math.random() * candidates.length)) % candidates.length];
@@ -1351,15 +1469,15 @@ class JigsawEngine {
   render() {
     const ctx = this.ctx;
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
-    ctx.clearRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
-    ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.clearRect(0, 0, this.worldWidth, this.worldHeight);
+    ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
     ctx.save();
-    ctx.translate(JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2);
+    ctx.translate(this.worldWidth / 2, this.worldHeight / 2);
     ctx.scale(this.camera.zoom, this.camera.zoom);
     ctx.translate(-this.camera.x, -this.camera.y);
-    const surface = ctx.createRadialGradient(JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 80, JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 760);
+    const surface = ctx.createRadialGradient(this.worldWidth / 2, this.worldHeight / 2, 80, this.worldWidth / 2, this.worldHeight / 2, Math.max(this.worldWidth, this.worldHeight) * .55);
     surface.addColorStop(0, '#17171c'); surface.addColorStop(1, '#0e0e11');
-    ctx.fillStyle = surface; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.fillStyle = surface; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
     ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
@@ -1374,8 +1492,17 @@ class JigsawEngine {
       ctx.restore();
       return;
     }
-    this.drawOrder.forEach((id) => this.drawPiece(this.pieces[id]));
+    const visible = this.visibleWorldBounds(36 / this.camera.zoom);
+    this.lastRenderedPieceCount = 0;
+    this.drawOrder.forEach((id) => {
+      const piece = this.pieces[id];
+      const bounds = this.pieceWorldBounds(piece);
+      if (bounds.maxX < visible.minX || bounds.minX > visible.maxX || bounds.maxY < visible.minY || bounds.minY > visible.maxY) return;
+      this.drawPiece(piece);
+      this.lastRenderedPieceCount += 1;
+    });
     ctx.restore();
+    if (this.metrics.firstRenderMs === null && this.firstRenderStartedAt) this.metrics.firstRenderMs = performance.now() - this.firstRenderStartedAt;
   }
 
   drawPiece(piece) {
