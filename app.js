@@ -754,6 +754,8 @@ class JigsawEngine {
     this.puzzle = puzzle;
     this.image = image;
     this.pieces = [];
+    this.groups = new Map();
+    this.neighbors = [];
     this.drawOrder = [];
     this.drag = null;
     this.moves = 0;
@@ -828,6 +830,24 @@ class JigsawEngine {
       }
     }
     if (this.pieces.length !== JigsawEngine.PIECE_COUNT) throw new Error('Easy Jigsaw must contain exactly 52 pieces.');
+    this.initializeGroupsAndNeighbors();
+  }
+
+  initializeGroupsAndNeighbors() {
+    this.groups.clear();
+    this.neighbors = this.pieces.map(() => new Set());
+    this.pieces.forEach((piece) => this.groups.set(piece.id, new Set([piece.id])));
+    const connect = (a, b) => { this.neighbors[a.id].add(b.id); this.neighbors[b.id].add(a.id); };
+    const rows = Array.from({ length: JigsawEngine.ROWS }, (_, row) => this.pieces.filter((piece) => piece.row === row));
+    rows.forEach((rowPieces) => {
+      for (let index = 0; index < rowPieces.length - 1; index += 1) connect(rowPieces[index], rowPieces[index + 1]);
+    });
+    for (let row = 0; row < JigsawEngine.ROWS - 1; row += 1) {
+      rows[row].forEach((upper) => rows[row + 1].forEach((lower) => {
+        const sharedWidth = Math.min(upper.targetX + upper.width, lower.targetX + lower.width) - Math.max(upper.targetX, lower.targetX);
+        if (sharedWidth > .001) connect(upper, lower);
+      }));
+    }
   }
 
   makePiecePath(piece) {
@@ -870,6 +890,40 @@ class JigsawEngine {
       x: Math.max(margin - bounds.minX, Math.min(JigsawEngine.WIDTH - margin - bounds.maxX, x)),
       y: Math.max(margin - bounds.minY, Math.min(JigsawEngine.HEIGHT - margin - bounds.maxY, y)),
     };
+  }
+
+  groupMembers(groupId) {
+    return [...(this.groups.get(groupId) || [])].map((id) => this.pieces[id]);
+  }
+
+  groupBounds(groupId, positions = null) {
+    const members = this.groupMembers(groupId);
+    return members.reduce((bounds, piece) => {
+      const position = positions?.get(piece.id) || piece;
+      return {
+        minX: Math.min(bounds.minX, position.x + piece.visualBounds.minX),
+        maxX: Math.max(bounds.maxX, position.x + piece.visualBounds.maxX),
+        minY: Math.min(bounds.minY, position.y + piece.visualBounds.minY),
+        maxY: Math.max(bounds.maxY, position.y + piece.visualBounds.maxY),
+      };
+    }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+  }
+
+  clampGroupTranslation(groupId, dx, dy, positions = null, margin = 8) {
+    const bounds = this.groupBounds(groupId, positions);
+    return {
+      dx: Math.max(margin - bounds.minX, Math.min(JigsawEngine.WIDTH - margin - bounds.maxX, dx)),
+      dy: Math.max(margin - bounds.minY, Math.min(JigsawEngine.HEIGHT - margin - bounds.maxY, dy)),
+    };
+  }
+
+  translateGroup(groupId, dx, dy) {
+    this.groupMembers(groupId).forEach((piece) => { piece.x += dx; piece.y += dy; });
+  }
+
+  bringGroupToFront(groupId) {
+    const ids = this.groups.get(groupId) || new Set();
+    this.drawOrder = [...this.drawOrder.filter((id) => !ids.has(id)), ...this.drawOrder.filter((id) => ids.has(id))];
   }
 
   horizontalBoundaryY(boundary, x) {
@@ -972,8 +1026,10 @@ class JigsawEngine {
       if (piece.placed) continue;
       const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
       if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
-        this.drag = { piece, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startX: point.x, startY: point.y, moved: false };
-        this.drawOrder.splice(index, 1); this.drawOrder.push(piece.id);
+        const groupId = piece.groupId;
+        const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
+        this.drag = { piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startX: point.x, startY: point.y, moved: false };
+        this.bringGroupToFront(groupId);
         this.canvas.setPointerCapture(event.pointerId);
         this.requestRender();
         break;
@@ -990,9 +1046,15 @@ class JigsawEngine {
 
   updateDraggedPiece(event) {
     const point = this.canvasPoint(event);
-    const position = this.clampPiecePosition(this.drag.piece, point.x - this.drag.offsetX, point.y - this.drag.offsetY);
-    this.drag.piece.x = position.x;
-    this.drag.piece.y = position.y;
+    const anchorStart = this.drag.startPositions.get(this.drag.piece.id);
+    const rawDx = point.x - this.drag.offsetX - anchorStart.x;
+    const rawDy = point.y - this.drag.offsetY - anchorStart.y;
+    const translation = this.clampGroupTranslation(this.drag.groupId, rawDx, rawDy, this.drag.startPositions);
+    this.groupMembers(this.drag.groupId).forEach((piece) => {
+      const start = this.drag.startPositions.get(piece.id);
+      piece.x = start.x + translation.dx;
+      piece.y = start.y + translation.dy;
+    });
     return point;
   }
 
@@ -1000,14 +1062,69 @@ class JigsawEngine {
     return Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY);
   }
 
-  tryPlacePiece(piece) {
-    if (piece.placed || this.snapDistance(piece) > piece.snapTolerance) return false;
-    piece.x = piece.targetX;
-    piece.y = piece.targetY;
-    piece.placed = true;
-    this.placed += 1;
+  tryPlaceGroup(groupId) {
+    const members = this.groupMembers(groupId);
+    if (!members.length || members.some((piece) => piece.placed)) return false;
+    const anchor = members[0];
+    const tolerance = Math.min(...members.map((piece) => piece.snapTolerance));
+    if (this.snapDistance(anchor) > tolerance) return false;
+    const groupDx = anchor.x - anchor.targetX;
+    const groupDy = anchor.y - anchor.targetY;
+    const rigid = members.every((piece) =>
+      Math.abs((piece.x - piece.targetX) - groupDx) < .01 &&
+      Math.abs((piece.y - piece.targetY) - groupDy) < .01);
+    if (!rigid) return false;
+    let newlyPlaced = 0;
+    members.forEach((piece) => {
+      piece.x = piece.targetX;
+      piece.y = piece.targetY;
+      if (!piece.placed) { piece.placed = true; newlyPlaced += 1; }
+    });
+    this.placed += newlyPlaced;
     $('#jigsawPlacedText').textContent = `${this.placed} / ${JigsawEngine.PIECE_COUNT}`;
     return true;
+  }
+
+  tryConnectGroup(movingGroupId) {
+    const movingMembers = this.groupMembers(movingGroupId);
+    if (!movingMembers.length || movingMembers.some((piece) => piece.placed)) return null;
+    let best = null;
+    movingMembers.forEach((movingPiece) => {
+      this.neighbors[movingPiece.id].forEach((neighborId) => {
+        const stationaryPiece = this.pieces[neighborId];
+        const stationaryGroupId = stationaryPiece.groupId;
+        if (stationaryGroupId === movingGroupId || stationaryPiece.placed) return;
+        const expectedDx = stationaryPiece.targetX - movingPiece.targetX;
+        const expectedDy = stationaryPiece.targetY - movingPiece.targetY;
+        const dx = stationaryPiece.x - movingPiece.x - expectedDx;
+        const dy = stationaryPiece.y - movingPiece.y - expectedDy;
+        const tolerance = Math.min(movingPiece.snapTolerance, stationaryPiece.snapTolerance);
+        const error = Math.hypot(dx, dy);
+        if (error > tolerance) return;
+        const clamped = this.clampGroupTranslation(movingGroupId, dx, dy);
+        if (Math.abs(clamped.dx - dx) > .01 || Math.abs(clamped.dy - dy) > .01) return;
+        const normalizedError = error / tolerance;
+        if (!best || normalizedError < best.normalizedError) best = { stationaryGroupId, dx, dy, normalizedError };
+      });
+    });
+    if (!best) return null;
+    this.translateGroup(movingGroupId, best.dx, best.dy);
+    return this.mergeGroups(movingGroupId, best.stationaryGroupId);
+  }
+
+  mergeGroups(movingGroupId, stationaryGroupId) {
+    if (movingGroupId === stationaryGroupId) return stationaryGroupId;
+    const moving = this.groups.get(movingGroupId);
+    const stationary = this.groups.get(stationaryGroupId);
+    if (!moving || !stationary) return null;
+    moving.forEach((id) => { stationary.add(id); this.pieces[id].groupId = stationaryGroupId; });
+    this.groups.delete(movingGroupId);
+    const pulseUntil = performance.now() + 260;
+    stationary.forEach((id) => { this.pieces[id].connectedPulseUntil = pulseUntil; });
+    this.bringGroupToFront(stationaryGroupId);
+    this.canvas.dispatchEvent(new CustomEvent('jigsaw:connected', { detail: { groupId: stationaryGroupId, size: stationary.size } }));
+    setTimeout(() => this.requestRender(), 270);
+    return stationaryGroupId;
   }
 
   pointerUp(event) {
@@ -1017,11 +1134,14 @@ class JigsawEngine {
       const releasePoint = this.updateDraggedPiece(event);
       if (Math.hypot(releasePoint.x - this.drag.startX, releasePoint.y - this.drag.startY) > 6) this.drag.moved = true;
     }
-    const { piece, moved } = this.drag;
+    const { groupId, moved } = this.drag;
     if (moved) {
       this.moves += 1;
       $('#jigsawMoveText').textContent = String(this.moves);
-      if (!cancelled) this.tryPlacePiece(piece);
+      if (!cancelled && !this.tryPlaceGroup(groupId)) {
+        const mergedGroupId = this.tryConnectGroup(groupId);
+        if (mergedGroupId !== null) this.tryPlaceGroup(mergedGroupId);
+      }
     }
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
     this.drag = null;
@@ -1031,14 +1151,37 @@ class JigsawEngine {
 
   gatherLoosePieces() {
     if (this.completed || this.previewing) return;
-    const loosePieces = this.pieces.filter((piece) => !piece.placed);
-    if (!loosePieces.length) return;
-    this.scatterPieces(loosePieces);
-    const looseIds = new Set(loosePieces.map((piece) => piece.id));
-    this.drawOrder = [
-      ...this.drawOrder.filter((id) => !looseIds.has(id)),
-      ...shuffle(loosePieces.map((piece) => piece.id)),
-    ];
+    const looseGroupIds = [...this.groups.keys()].filter((groupId) => this.groupMembers(groupId).every((piece) => !piece.placed));
+    if (!looseGroupIds.length) return;
+    const margin = 24, gap = 24;
+    const zones = [
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: JigsawEngine.WIDTH - (this.board.x + this.board.width + gap) - margin, height: JigsawEngine.HEIGHT - margin * 2 },
+      { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: JigsawEngine.HEIGHT - (this.board.y + this.board.height + gap) - margin },
+    ].filter((zone) => zone.width > 50 && zone.height > 50);
+    const centers = [];
+    shuffle(looseGroupIds).forEach((groupId, index) => {
+      const bounds = this.groupBounds(groupId);
+      const width = bounds.maxX - bounds.minX, height = bounds.maxY - bounds.minY;
+      const fittingZones = zones.filter((zone) => width <= zone.width && height <= zone.height);
+      const candidates = fittingZones.length ? fittingZones : [{ x: margin, y: margin, width: JigsawEngine.WIDTH - margin * 2, height: JigsawEngine.HEIGHT - margin * 2 }];
+      let candidate;
+      for (let attempt = 0; attempt < 70; attempt += 1) {
+        const zone = candidates[(index + Math.floor(Math.random() * candidates.length)) % candidates.length];
+        const x = zone.x + Math.random() * Math.max(0, zone.width - width);
+        const y = zone.y + Math.random() * Math.max(0, zone.height - height);
+        const center = { x: x + width / 2, y: y + height / 2 };
+        candidate = { x, y, center };
+        if (centers.every((prior) => Math.hypot(center.x - prior.x, center.y - prior.y) > Math.min(width, height) * .4)) break;
+      }
+      const translation = this.clampGroupTranslation(groupId, candidate.x - bounds.minX, candidate.y - bounds.minY, null, margin);
+      this.translateGroup(groupId, translation.dx, translation.dy);
+      centers.push(candidate.center);
+    });
+    const looseIds = new Set(looseGroupIds.flatMap((groupId) => [...this.groups.get(groupId)]));
+    const looseOrder = shuffle(looseGroupIds).flatMap((groupId) => this.drawOrder.filter((id) => this.groups.get(groupId).has(id)));
+    this.drawOrder = [...this.drawOrder.filter((id) => !looseIds.has(id)), ...looseOrder];
     this.requestRender();
     showToast('Loose pieces gathered');
   }
@@ -1079,8 +1222,9 @@ class JigsawEngine {
     ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = piece.placed ? 2 : 9; ctx.shadowOffsetY = piece.placed ? 0 : 4;
     ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
     ctx.restore();
-    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : 'rgba(255,255,255,.72)';
-    ctx.lineWidth = piece.placed ? 1.5 : 2.2; ctx.stroke(piece.path); ctx.restore();
+    const connecting = (piece.connectedPulseUntil || 0) > performance.now();
+    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : connecting ? '#b9ff36' : 'rgba(255,255,255,.72)';
+    ctx.lineWidth = connecting ? 4 : piece.placed ? 1.5 : 2.2; ctx.stroke(piece.path); ctx.restore();
   }
 
   preview() {
