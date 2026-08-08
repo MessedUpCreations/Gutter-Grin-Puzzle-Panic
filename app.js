@@ -403,11 +403,20 @@ function renderProfile() {
   `;
   $('#profileGoogleBtn')?.addEventListener('click', () => signInWithProvider('google'));
   $('#profileFacebookBtn')?.addEventListener('click', () => signInWithProvider('facebook'));
-  $('#logoutBtn')?.addEventListener('click', () => {
-    state.profile = structuredClone(defaultState.profile);
-    saveState();
-    renderProfile();
-  });
+  $('#logoutBtn')?.addEventListener('click', async () => {
+  try {
+    const { auth, authMod } = await getFirebaseContext();
+    await authMod.signOut(auth);
+  } catch (error) {
+    console.error('Firebase sign-out failed:', error);
+  }
+
+  state.profile = structuredClone(defaultState.profile);
+  saveLocalState();
+  renderProfile();
+
+  showToast('Signed out · Guest mode active');
+});
   $('#resetBtn').addEventListener('click', () => showModal('Reset Progress?', 'This removes coins, puzzle completions and local player progress from this device.', [
     { label: 'Cancel' },
     { label: 'Reset Everything', primary: true, action: () => { resetState(); renderProfile(); } },
