@@ -576,6 +576,72 @@ async function signInWithProvider(providerName) {
     );
   }
 
+  if (location.protocol === 'file:') {
+    return showModal(
+      'Host the Game First',
+      'Google/Facebook authentication needs the game hosted on an approved HTTPS domain.',
+      [{ label: 'Got it', primary: true }],
+      '🔐'
+    );
+  }
+
+  try {
+    // Preserve the progress already stored on this device.
+    const localBeforeSignIn = structuredClone(state);
+
+    const { auth, authMod } = await getFirebaseContext();
+
+    const provider =
+      providerName === 'google'
+        ? new authMod.GoogleAuthProvider()
+        : new authMod.FacebookAuthProvider();
+
+    const result = await authMod.signInWithPopup(auth, provider);
+
+    state.profile = {
+      provider: providerName,
+      name:
+        result.user.displayName ||
+        result.user.email ||
+        `${capitalize(providerName)} Player`,
+      uid: result.user.uid,
+    };
+
+    // Save locally only until we've checked for an existing cloud save.
+    saveLocalState();
+
+    let cloudStatus = 'unavailable';
+
+    try {
+      await syncPlayerProfileToCloud(result.user, providerName);
+
+      cloudStatus = await loadOrCreatePlayerSave(
+        result.user,
+        providerName,
+        localBeforeSignIn
+      );
+    } catch (cloudError) {
+      console.error('Firestore sync failed:', cloudError);
+    }
+
+    enterApp();
+
+    if (cloudStatus === 'loaded') {
+      showToast(
+        `Signed in with ${capitalize(providerName)} · Cloud save loaded`
+      );
+    } else if (cloudStatus === 'created') {
+      showToast(
+        `Signed in with ${capitalize(providerName)} · Progress saved to cloud`
+      );
+    } else {
+      showToast(
+        `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
+      );
+    }
+  } catch (err) {
+    console.error(err);
+
     showModal(
       'Sign-in Failed',
       err?.message || 'The authentication popup did not complete.',
