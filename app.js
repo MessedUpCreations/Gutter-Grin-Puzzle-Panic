@@ -925,6 +925,7 @@ class JigsawEngine {
     this.metrics.setupMs = performance.now() - setupStarted;
     this.bindEvents();
     this.resizeCanvas();
+    if (!this.resumeSave) this.applyDefaultWorkingView(false);
     this.startedAt = Date.now();
     this.firstRenderStartedAt = performance.now();
     this.timer = setInterval(() => {
@@ -1381,10 +1382,44 @@ class JigsawEngine {
     scheduleActiveJigsawSave(this);
   }
 
-  resetView() {
-    this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
+  fitAll() {
+    const padding = 60;
+    this.camera = {
+      x: this.worldWidth / 2,
+      y: this.worldHeight / 2,
+      zoom: Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM,
+        Math.min((this.worldWidth - padding * 2) / this.worldWidth, (this.worldHeight - padding * 2) / this.worldHeight))),
+    };
+    this.constrainCamera();
     this.requestRender();
     scheduleActiveJigsawSave(this);
+  }
+
+  defaultWorkingCamera() {
+    if (this.difficulty === 'easy' || this.difficulty === 'normal') {
+      return { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
+    }
+    const averagePieceWidth = this.pieces.reduce((total, piece) => total + piece.width, 0) / this.pieces.length;
+    const smallerPieceDimension = Math.min(averagePieceWidth, this.pieceHeight);
+    const cssPixelsPerWorldUnit = Math.min(this.scaleX || 1, this.scaleY || 1);
+    const targetPiecePixels = 24;
+    const zoom = targetPiecePixels / Math.max(1, smallerPieceDimension * cssPixelsPerWorldUnit);
+    return {
+      x: this.board.x + this.board.width / 2,
+      y: this.board.y + this.board.height / 2,
+      zoom: Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, zoom)),
+    };
+  }
+
+  applyDefaultWorkingView(persist = true) {
+    this.camera = this.defaultWorkingCamera();
+    this.constrainCamera();
+    this.requestRender();
+    if (persist) scheduleActiveJigsawSave(this);
+  }
+
+  resetView() {
+    this.applyDefaultWorkingView();
   }
 
   pointerDown(event) {
@@ -2001,6 +2036,7 @@ $('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePie
 $('#jigsawZoomOutBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1 / 1.25));
 $('#jigsawZoomInBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1.25));
 $('#jigsawFitBtn').addEventListener('click', () => jigsawGame?.fitBoard?.());
+$('#jigsawFitAllBtn').addEventListener('click', () => jigsawGame?.fitAll?.());
 $('#jigsawResetViewBtn').addEventListener('click', () => jigsawGame?.resetView?.());
 $('#exitJigsawBtn').addEventListener('click', () => {
   if (!jigsawGame || jigsawGame.completed) return returnFromJigsaw();
