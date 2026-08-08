@@ -8,22 +8,40 @@ const PUZZLES = [
 
 const PACKS = [
   { id: 'starter', title: 'Gutter Grin Starter Pack', count: 5, price: 0, owned: true, available: true, image: 'assets/gutter-grin.webp', description: 'The five launch puzzles included with the game.' },
-  { id: 'trash-panda', title: 'Trash Panda Trouble', count: 6, price: 500, owned: false, available: false, description: 'Future raccoon chaos pack. Pack slot and shop logic are ready.' },
-  { id: 'after-hours', title: 'After Hours', count: 8, price: 750, owned: false, available: false, description: 'A future adults-only humor puzzle pack.' },
-  { id: 'hot-mess', title: 'Hot Mess Express', count: 10, price: 1000, owned: false, available: false, description: 'A larger future pack for the truly committed mess.' },
+  { id: 'raccoon-adventures', title: 'Raccoon Adventures', count: 5, price: 500, owned: false, available: false, description: 'More trash-panda trouble is on the way.' },
+  { id: 'wild-groovy', title: "Wild n' Groovy", count: 5, price: 500, owned: false, available: false, description: 'A future pack of wild, groovy artwork.' },
+  { id: 'epic-fantasy', title: 'Epic Fantasy', count: 5, price: 500, owned: false, available: false, description: 'A future collection of fantastic adventures.' },
 ];
 
-const DIFFICULTIES = {
+const SWAP_DIFFICULTIES = {
   easy:   { label: 'Easy', cols: 3, rows: 3, reward: 10 },
   normal: { label: 'Normal', cols: 4, rows: 4, reward: 20 },
   hard:   { label: 'Hard', cols: 5, rows: 5, reward: 35 },
   insane: { label: 'Insane', cols: 6, rows: 6, reward: 60 },
 };
 
+// Timing values are in seconds so Stage 9B can calculate time bonuses directly.
+const JIGSAW_DIFFICULTIES = {
+  easy: { label: 'Easy', pieces: 52, reward: 2, timeBonus: { type: 'sliding', fastestSeconds: 300, slowestSeconds: 900, minCoins: 1, maxCoins: 5 } },
+  normal: { label: 'Normal', pieces: 252, reward: 5, timeBonus: { type: 'sliding', fastestSeconds: 900, slowestSeconds: 1800, minCoins: 5, maxCoins: 10 } },
+  hard: { label: 'Hard', pieces: 500, reward: 10, timeBonus: { type: 'sliding', fastestSeconds: 2700, slowestSeconds: 3600, minCoins: 10, maxCoins: 20 } },
+  insane: { label: 'Insane', pieces: 1000, reward: 20, timeBonus: { type: 'tiers', tiers: [
+    { maxSeconds: 3600, coins: 40 }, { maxSeconds: 7200, coins: 30 },
+    { maxSeconds: 10800, coins: 20 }, { maxSeconds: null, coins: 0 },
+  ] } },
+};
+
+const GAME_MODES = {
+  swap: { label: 'Swap Puzzle', icon: '⇄', description: 'Swap scrambled tiles until the artwork is back where it belongs.', difficulties: SWAP_DIFFICULTIES },
+  jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
+};
+
 const STORAGE_KEY = 'gutterGrinPuzzlePanic.v1';
+const JIGSAW_SAVE_KEY = 'gutterGrinPuzzlePanic.jigsawActive.v1';
 const defaultState = {
   profile: { provider: 'guest', name: 'Guest Player', uid: null },
   coins: 250,
+  selectedMode: 'swap',
   difficulty: 'normal',
   completed: {},
   purchasedPacks: ['starter'],
@@ -38,6 +56,76 @@ let game = null;
 let timerHandle = null;
 let previewHandle = null;
 let firebaseContext = null;
+let puzzleFlow = { step: 'mode', puzzleId: null };
+let jigsawGame = null;
+let activeJigsawSave = null;
+let jigsawLocalSaveTimer = null;
+let jigsawCloudSaveTimer = null;
+
+function jigsawSaveScope() { return state.profile?.uid || 'guest'; }
+function validActiveJigsawSave(save) {
+  return !!save && save.v === 1 && PUZZLES.some((p) => p.id === save.puzzleId)
+    && JIGSAW_DIFFICULTIES[save.difficulty]?.pieces === save.pieces?.length
+    && Number.isInteger(save.seed) && Array.isArray(save.camera) && Array.isArray(save.drawOrder);
+}
+function readLocalActiveJigsaw() {
+  try {
+    const all = JSON.parse(localStorage.getItem(JIGSAW_SAVE_KEY)) || {};
+    const save = all[jigsawSaveScope()];
+    return validActiveJigsawSave(save) ? save : null;
+  } catch { return null; }
+}
+function writeLocalActiveJigsaw(save) {
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(JIGSAW_SAVE_KEY)) || {}; } catch { /* replace invalid data */ }
+  if (save) all[jigsawSaveScope()] = save; else delete all[jigsawSaveScope()];
+  localStorage.setItem(JIGSAW_SAVE_KEY, JSON.stringify(all));
+  activeJigsawSave = save;
+}
+async function saveActiveJigsawToCloud(save) {
+  if (!state.profile?.uid || state.profile.provider === 'guest') return;
+  const { db, firestoreMod, auth } = await getFirebaseContext();
+  if (auth.currentUser?.uid !== state.profile.uid) return;
+  const ref = firestoreMod.doc(db, 'users', state.profile.uid, 'jigsawSaves', 'active');
+  await firestoreMod.setDoc(ref, save);
+}
+async function deleteActiveJigsawFromCloud() {
+  if (!state.profile?.uid || state.profile.provider === 'guest') return;
+  const { db, firestoreMod, auth } = await getFirebaseContext();
+  if (auth.currentUser?.uid !== state.profile.uid) return;
+  await firestoreMod.deleteDoc(firestoreMod.doc(db, 'users', state.profile.uid, 'jigsawSaves', 'active'));
+}
+async function hydrateActiveJigsawSave() {
+  const local = readLocalActiveJigsaw();
+  let cloud = null;
+  if (state.profile?.uid && state.profile.provider !== 'guest') {
+    try {
+      const { db, firestoreMod } = await getFirebaseContext();
+      const snapshot = await firestoreMod.getDoc(firestoreMod.doc(db, 'users', state.profile.uid, 'jigsawSaves', 'active'));
+      if (snapshot.exists() && validActiveJigsawSave(snapshot.data())) cloud = snapshot.data();
+    } catch (error) { console.error('Active Jigsaw load failed:', error); }
+  }
+  activeJigsawSave = !cloud || (local?.updatedAt || 0) > (cloud.updatedAt || 0) ? local : cloud;
+  if (activeJigsawSave) {
+    writeLocalActiveJigsaw(activeJigsawSave);
+    if (activeJigsawSave === local && state.profile?.uid) saveActiveJigsawToCloud(activeJigsawSave).catch(() => {});
+  }
+  if (currentView === 'puzzles' && puzzleFlow.step === 'mode') renderPuzzles();
+}
+function clearActiveJigsawSave() {
+  clearTimeout(jigsawLocalSaveTimer); clearTimeout(jigsawCloudSaveTimer);
+  writeLocalActiveJigsaw(null);
+  return deleteActiveJigsawFromCloud().catch((error) => console.error('Active Jigsaw delete failed:', error));
+}
+function scheduleActiveJigsawSave(engine, immediate = false) {
+  if (!engine || engine.completed) return Promise.resolve();
+  const persist = () => { const save = engine.serializeActiveSave(); writeLocalActiveJigsaw(save); return save; };
+  clearTimeout(jigsawLocalSaveTimer); clearTimeout(jigsawCloudSaveTimer);
+  if (immediate) { const save = persist(); return saveActiveJigsawToCloud(save).catch((e) => console.error('Active Jigsaw cloud save failed:', e)); }
+  jigsawLocalSaveTimer = setTimeout(persist, 250);
+  jigsawCloudSaveTimer = setTimeout(() => saveActiveJigsawToCloud(persist()).catch((e) => console.error('Active Jigsaw cloud save failed:', e)), 2000);
+  return Promise.resolve();
+}
 
 async function getFirebaseContext() {
   const config = window.GG_FIREBASE_CONFIG;
@@ -100,6 +188,7 @@ function getCloudSavePayload() {
   return {
     version: 1,
     coins: Number(state.coins || 0),
+    selectedMode: GAME_MODES[state.selectedMode] ? state.selectedMode : 'swap',
     difficulty: state.difficulty || 'normal',
     completed: state.completed || {},
     purchasedPacks: Array.isArray(state.purchasedPacks)
@@ -170,6 +259,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       ...structuredClone(defaultState),
       profile: signedInProfile,
       coins: cloud.coins ?? defaultState.coins,
+      selectedMode: GAME_MODES[cloud.selectedMode] ? cloud.selectedMode : 'swap',
       difficulty: cloud.difficulty ?? defaultState.difficulty,
       completed: cloud.completed || {},
       purchasedPacks: Array.isArray(cloud.purchasedPacks)
@@ -206,12 +296,16 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const authScreen = $('#authScreen');
 const mainScreen = $('#mainScreen');
 const gameScreen = $('#gameScreen');
+const jigsawPrepScreen = $('#jigsawPrepScreen');
+const jigsawScreen = $('#jigsawScreen');
 const viewHost = $('#viewHost');
 
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    return { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
+    const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
+    loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
+    return loaded;
   } catch {
     return structuredClone(defaultState);
   }
@@ -239,7 +333,7 @@ function resetState() {
 }
 
 function showScreen(screen) {
-  [authScreen, mainScreen, gameScreen].forEach((el) => el.classList.remove('active'));
+  [authScreen, mainScreen, gameScreen, jigsawPrepScreen, jigsawScreen].forEach((el) => el.classList.remove('active'));
   screen.classList.add('active');
 }
 
@@ -253,6 +347,7 @@ function updateWallet() {
 }
 
 function navigate(view) {
+  if (view === 'puzzles' && currentView !== 'puzzles') puzzleFlow = { step: 'mode', puzzleId: null };
   currentView = view;
   $$('.nav-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.nav === view));
   renderView();
@@ -267,8 +362,15 @@ function renderView() {
   updateWallet();
 }
 
-function completionCountForPuzzle(id) {
-  return Object.keys(state.completed || {}).filter((key) => key.startsWith(`${id}:`)).length;
+function completionKey(mode, puzzleId, difficulty) {
+  // Preserve legacy Swap keys; reserve a mode prefix for future Jigsaw clears.
+  return mode === 'swap' ? `${puzzleId}:${difficulty}` : `${mode}:${puzzleId}:${difficulty}`;
+}
+
+function completionCountForPuzzle(id, mode = 'swap') {
+  return Object.keys(state.completed || {}).filter((key) => mode === 'swap'
+    ? key.startsWith(`${id}:`)
+    : key.startsWith(`${mode}:${id}:`)).length;
 }
 
 function renderHome() {
@@ -281,7 +383,7 @@ function renderHome() {
         <p>Pick a Gutter Grin artwork, choose your difficulty, and swap scrambled pieces until the picture is whole again.</p>
         <div class="hero-actions">
           <button class="btn primary" id="quickPlayBtn">Quick Play</button>
-          <button class="btn subtle" data-go="puzzles">Choose a Puzzle</button>
+          <button class="btn subtle" data-go="puzzles">Choose a Mode</button>
         </div>
       </div>
     </section>
@@ -290,24 +392,25 @@ function renderHome() {
       <div><h3>Starter Pack</h3><p>${completedUnique} of ${PUZZLES.length} puzzles completed</p></div>
       <button class="text-btn" data-go="puzzles">See all</button>
     </div>
-    <div class="puzzle-grid">${PUZZLES.slice(0,5).map(puzzleCard).join('')}</div>
+    <div class="puzzle-grid">${PUZZLES.slice(0,5).map((puzzle) => puzzleCard(puzzle, 'browse')).join('')}</div>
   `;
   bindViewEvents();
   $('#quickPlayBtn').addEventListener('click', () => {
-    const incomplete = PUZZLES.find((p) => !state.completed[`${p.id}:${state.difficulty}`]);
-    startGame(incomplete || PUZZLES[Math.floor(Math.random() * PUZZLES.length)]);
+    puzzleFlow = { step: 'mode', puzzleId: null };
+    navigate('puzzles');
   });
 }
 
-function puzzleCard(puzzle) {
-  const solved = completionCountForPuzzle(puzzle.id) > 0;
+function puzzleCard(puzzle, context = 'select') {
+  const mode = context === 'browse' ? 'swap' : state.selectedMode;
+  const solved = completionCountForPuzzle(puzzle.id, mode) > 0;
   return `
-    <button class="puzzle-card" data-puzzle="${puzzle.id}">
+    <button class="puzzle-card" ${context === 'browse' ? 'data-go="puzzles"' : `data-puzzle="${puzzle.id}"`}>
       <img class="puzzle-thumb" src="${puzzle.image}" alt="${escapeHtml(puzzle.title)} puzzle artwork" loading="lazy" />
       <div class="puzzle-info">
         <strong>${escapeHtml(puzzle.title)}</strong>
         <div class="puzzle-meta">
-          <span>${DIFFICULTIES[state.difficulty].label} · ${DIFFICULTIES[state.difficulty].cols}×${DIFFICULTIES[state.difficulty].rows}</span>
+          <span>${context === 'browse' ? 'Choose mode to play' : GAME_MODES[mode].label}</span>
           <span class="${solved ? 'complete-dot' : ''}">${solved ? '✓ Solved' : 'Play'}</span>
         </div>
       </div>
@@ -315,22 +418,85 @@ function puzzleCard(puzzle) {
 }
 
 function renderPuzzles() {
+  if (puzzleFlow.step === 'mode') return renderModeSelection();
+  if (puzzleFlow.step === 'puzzle') return renderPuzzleSelection();
+  return renderDifficultySelection();
+}
+
+function flowHeader(kicker, title, copy, backStep) {
+  return `<div class="flow-head">
+    ${backStep ? `<button class="flow-back" data-flow-back="${backStep}" aria-label="Go back">← Back</button>` : '<span></span>'}
+    <p class="eyebrow">${kicker}</p><h2>${title}</h2><p>${copy}</p>
+  </div>`;
+}
+
+function renderModeSelection() {
+  activeJigsawSave = readLocalActiveJigsaw();
+  const resumedPuzzle = activeJigsawSave && PUZZLES.find((p) => p.id === activeJigsawSave.puzzleId);
   viewHost.innerHTML = `
-    <div class="section-head" style="margin-top:4px">
-      <div><h3>Your Puzzles</h3><p>Every attached launch artwork is a separate puzzle.</p></div>
-    </div>
-    <div class="difficulty-bar">
-      <label for="difficultySelect">Difficulty</label>
-      <select id="difficultySelect" class="select">
-        ${Object.entries(DIFFICULTIES).map(([key,d]) => `<option value="${key}" ${key === state.difficulty ? 'selected' : ''}>${d.label} · ${d.cols}×${d.rows} · +${d.reward} coins</option>`).join('')}
-      </select>
-    </div>
-    <div class="puzzle-grid">${PUZZLES.map(puzzleCard).join('')}</div>
+    ${flowHeader('STEP 1 OF 4', 'Choose your mode', 'How do you want to put the chaos back together?')}
+    ${resumedPuzzle ? `<section class="play-panel"><p class="eyebrow">UNFINISHED JIGSAW</p><h3>${escapeHtml(resumedPuzzle.title)}</h3><p>${JIGSAW_DIFFICULTIES[activeJigsawSave.difficulty].label} · ${activeJigsawSave.pieces.length.toLocaleString()} pieces · ${formatTime(activeJigsawSave.elapsedSeconds || 0)}</p><button class="btn primary" id="continueJigsawBtn">Continue Puzzle</button></section>` : ''}
+    <div class="mode-grid">${Object.entries(GAME_MODES).map(([key, mode]) => `
+      <button class="mode-card ${key}" data-mode="${key}">
+        <span class="mode-icon">${mode.icon}</span><span><strong>${mode.label}</strong><small>${mode.description}</small></span><b>Choose →</b>
+      </button>`).join('')}</div>
   `;
-  bindViewEvents();
-  $('#difficultySelect').addEventListener('change', (e) => {
-    state.difficulty = e.target.value;
+  $('#continueJigsawBtn')?.addEventListener('click', resumeActiveJigsaw);
+  $$('[data-mode]').forEach((button) => button.addEventListener('click', () => {
+    state.selectedMode = button.dataset.mode;
     saveState();
+    puzzleFlow = { step: 'puzzle', puzzleId: null };
+    renderPuzzles();
+  }));
+}
+
+function renderPuzzleSelection() {
+  viewHost.innerHTML = `${flowHeader('STEP 2 OF 4', 'Choose an artwork', `${GAME_MODES[state.selectedMode].label} · Starter Pack`, 'mode')}
+    <div class="puzzle-grid">${PUZZLES.map((puzzle) => puzzleCard(puzzle)).join('')}</div>`;
+  bindFlowBack();
+  bindViewEvents();
+}
+
+function timeBonusLabel(diff) {
+  if (diff.timeBonus.type === 'sliding') return `+${diff.timeBonus.minCoins}–${diff.timeBonus.maxCoins} time bonus · ${diff.timeBonus.fastestSeconds / 60}–${diff.timeBonus.slowestSeconds / 60} min window`;
+  return '+40 ≤60 min · +30 ≤120 · +20 ≤180';
+}
+
+function renderDifficultySelection() {
+  const puzzle = PUZZLES.find((item) => item.id === puzzleFlow.puzzleId);
+  if (!puzzle) { puzzleFlow = { step: 'puzzle', puzzleId: null }; return renderPuzzles(); }
+  const difficulties = GAME_MODES[state.selectedMode].difficulties;
+  viewHost.innerHTML = `${flowHeader('STEP 3 OF 4', 'Choose difficulty', `${puzzle.title} · ${GAME_MODES[state.selectedMode].label}`, 'puzzle')}
+    <div class="difficulty-grid">${Object.entries(difficulties).map(([key, diff]) => `
+      <button class="difficulty-card ${key === state.difficulty ? 'selected' : ''}" data-difficulty="${key}">
+        <span><strong>${diff.label}</strong><small>${state.selectedMode === 'swap' ? `${diff.cols}×${diff.rows} grid` : `${diff.pieces.toLocaleString()} pieces`}</small></span>
+        <span class="reward-line">+${diff.reward} base coins</span>
+        ${state.selectedMode === 'jigsaw' ? `<small class="bonus-line">${timeBonusLabel(diff)}</small>` : ''}
+      </button>`).join('')}</div>
+    <section class="play-panel"><p class="eyebrow">STEP 4 OF 4</p><h3>Ready to panic?</h3><p>${puzzle.title} · ${difficulties[state.difficulty].label}</p><button class="btn primary xl" id="playSelectedBtn">Play ${GAME_MODES[state.selectedMode].label}</button></section>`;
+  bindFlowBack();
+  $$('[data-difficulty]').forEach((button) => button.addEventListener('click', () => {
+    state.difficulty = button.dataset.difficulty;
+    saveState();
+    renderDifficultySelection();
+  }));
+  $('#playSelectedBtn').addEventListener('click', () => {
+    if (state.selectedMode === 'jigsaw') {
+      const conflicts = activeJigsawSave && (activeJigsawSave.puzzleId !== puzzle.id || activeJigsawSave.difficulty !== state.difficulty);
+      if (conflicts) return showModal('Unfinished Jigsaw', 'Continue your saved puzzle, or replace it with this new one?', [
+        { label: 'Continue Existing', action: resumeActiveJigsaw },
+        { label: 'Replace With New', primary: true, action: async () => { await clearActiveJigsawSave(); showJigsawPreparation(puzzle); } },
+      ], '🧩');
+      return showJigsawPreparation(puzzle);
+    }
+    startGame(puzzle);
+  });
+}
+
+function bindFlowBack() {
+  $('[data-flow-back]')?.addEventListener('click', (event) => {
+    puzzleFlow.step = event.currentTarget.dataset.flowBack;
+    if (puzzleFlow.step === 'mode') puzzleFlow.puzzleId = null;
     renderPuzzles();
   });
 }
@@ -427,14 +593,17 @@ function bindViewEvents() {
   $$('[data-go]').forEach((el) => el.addEventListener('click', () => navigate(el.dataset.go)));
   $$('[data-puzzle]').forEach((el) => el.addEventListener('click', () => {
     const puzzle = PUZZLES.find((p) => p.id === el.dataset.puzzle);
-    if (puzzle) startGame(puzzle);
+    if (puzzle) {
+      puzzleFlow = { step: 'difficulty', puzzleId: puzzle.id };
+      renderPuzzles();
+    }
   }));
 }
 
 function startGame(puzzle) {
   clearInterval(timerHandle);
   clearTimeout(previewHandle);
-  const diff = DIFFICULTIES[state.difficulty];
+  const diff = SWAP_DIFFICULTIES[state.difficulty];
   const count = diff.cols * diff.rows;
   const pieces = Array.from({ length: count }, (_, i) => i);
   let shuffled = shuffle(pieces.slice());
@@ -530,7 +699,7 @@ function finishGame() {
   game.seconds = Math.max(1, Math.floor((Date.now() - game.startedAt) / 1000));
   $('#timerText').textContent = formatTime(game.seconds);
 
-  const key = `${game.puzzle.id}:${state.difficulty}`;
+  const key = completionKey('swap', game.puzzle.id, state.difficulty);
   const firstClear = !state.completed[key];
   const reward = firstClear ? game.diff.reward : Math.max(5, Math.round(game.diff.reward * 0.2));
   const prior = state.completed[key];
@@ -549,7 +718,7 @@ function finishGame() {
     'Puzzle Complete!',
     `${formatTime(game.seconds)} · ${game.moves} moves · ${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`,
     [
-      { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); navigate('puzzles'); } },
+      { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); puzzleFlow = { step: 'puzzle', puzzleId: null }; currentView = 'puzzles'; renderView(); } },
       { label: 'Play Again', primary: true, action: () => startGame(game.puzzle) },
     ],
     '✓'
@@ -571,6 +740,1029 @@ function reshuffle() {
   game.moves += 1;
   $('#moveText').textContent = String(game.moves);
   renderBoard();
+}
+
+function showJigsawPreparation(puzzle) {
+  clearInterval(timerHandle);
+  const difficulty = JIGSAW_DIFFICULTIES[state.difficulty] ? state.difficulty : 'easy';
+  const config = JIGSAW_DIFFICULTIES[difficulty];
+  jigsawGame = { puzzle, difficulty, started: false };
+  $('#jigsawPrepTitle').textContent = puzzle.title;
+  $('#jigsawPrepMode').textContent = `CLASSIC JIGSAW · ${config.label.toUpperCase()}`;
+  $('#jigsawPrepPieces').textContent = config.pieces.toLocaleString();
+  $('#jigsawPrepReward').textContent = `+${config.reward}`;
+  if (config.timeBonus.type === 'tiers') {
+    $('#jigsawPrepBonus').textContent = '+0–40';
+    $('#jigsawPrepBonusCopy').textContent = 'Earn +40 within 60 minutes, +30 within 120, or +20 within 180.';
+  } else if (difficulty === 'hard') {
+    $('#jigsawPrepBonus').textContent = '+10–20';
+    $('#jigsawPrepBonusCopy').textContent = 'Finish within 45 minutes for +20 bonus coins. The bonus slides down to +10 at 60 minutes.';
+  } else {
+    $('#jigsawPrepBonus').textContent = `+${config.timeBonus.minCoins}–${config.timeBonus.maxCoins}`;
+    $('#jigsawPrepBonusCopy').textContent = difficulty === 'easy'
+      ? 'Finish within 5 minutes for +5 bonus coins. The bonus slides down to +1 coin at 15 minutes.'
+      : 'Finish within 15 minutes for +10 bonus coins. The bonus slides down to +5 coins at 30 minutes.';
+  }
+  $('#jigsawPrepImage').src = puzzle.image;
+  $('#jigsawPrepImage').alt = `${puzzle.title} completed artwork`;
+  $('#prepCoinCount').textContent = Number(state.coins || 0).toLocaleString();
+  showScreen(jigsawPrepScreen);
+}
+
+async function startJigsaw(resumeSave = null) {
+  resumeSave = validActiveJigsawSave(resumeSave) ? resumeSave : null;
+  const puzzle = jigsawGame?.puzzle;
+  const difficulty = jigsawGame?.difficulty || 'easy';
+  if (!puzzle) return;
+  const image = new Image();
+  image.src = puzzle.image;
+  try { await image.decode(); } catch { /* The load event fallback below still validates dimensions. */ }
+  if (!image.complete || !image.naturalWidth) {
+    return showModal('Artwork Could Not Load', 'Please check your connection and try starting this puzzle again.', [{ label: 'Back', primary: true }], '!');
+  }
+  const startButton = $('#startJigsawBtn');
+  startButton.disabled = true; startButton.textContent = resumeSave ? 'Restoring Puzzle…' : 'Preparing Puzzle…';
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image, difficulty, { seed: resumeSave?.seed, resumeSave });
+  $('#jigsawTitle').textContent = puzzle.title;
+  $('#jigsawTimerText').textContent = '00:00';
+  $('#jigsawDifficultyText').textContent = `${jigsawGame.config.label} · ${jigsawGame.pieceCount.toLocaleString()} pieces`;
+  $('#jigsawPlacedText').textContent = `0 / ${jigsawGame.pieceCount.toLocaleString()}`;
+  $('#jigsawMoveText').textContent = '0';
+  showScreen(jigsawScreen);
+  jigsawGame.start();
+  startButton.disabled = false; startButton.textContent = 'Start Puzzle';
+}
+
+async function resumeActiveJigsaw() {
+  const save = activeJigsawSave || readLocalActiveJigsaw();
+  const puzzle = save && PUZZLES.find((p) => p.id === save.puzzleId);
+  if (!puzzle || !validActiveJigsawSave(save)) return showToast('Saved Jigsaw is unavailable');
+  state.selectedMode = 'jigsaw'; state.difficulty = save.difficulty; saveLocalState();
+  jigsawGame = { puzzle, difficulty: save.difficulty, started: false };
+  await startJigsaw(save);
+}
+
+function jigsawTimeBonus(difficulty, seconds) {
+  const bonus = JIGSAW_DIFFICULTIES[difficulty].timeBonus;
+  if (bonus.type === 'tiers') return bonus.tiers.find((tier) => tier.maxSeconds === null || seconds <= tier.maxSeconds).coins;
+  if (seconds <= bonus.fastestSeconds) return bonus.maxCoins;
+  if (seconds > bonus.slowestSeconds) return 0;
+  return Math.max(bonus.minCoins, Math.min(bonus.maxCoins, Math.ceil(bonus.minCoins + (bonus.maxCoins - bonus.minCoins) * (bonus.slowestSeconds - seconds) / (bonus.slowestSeconds - bonus.fastestSeconds))));
+}
+
+function finishJigsaw(engine) {
+  if (jigsawGame !== engine || engine.completed) return;
+  engine.completed = true;
+  engine.stopTimer();
+  engine.renderCompleted();
+  const seconds = engine.seconds;
+  const baseReward = engine.config.reward;
+  const timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
+  const reward = baseReward + timeBonus;
+  const key = completionKey('jigsaw', engine.puzzle.id, engine.difficulty);
+  const prior = state.completed[key];
+  state.completed[key] = {
+    bestSeconds: Number.isFinite(prior?.bestSeconds) ? Math.min(prior.bestSeconds, seconds) : seconds,
+    bestMoves: Number.isFinite(prior?.bestMoves) ? Math.min(prior.bestMoves, engine.moves) : engine.moves,
+    clears: (prior?.clears || 0) + 1,
+  };
+  state.coins += reward;
+  state.totalMoves = (state.totalMoves || 0) + engine.moves;
+  state.totalSeconds = (state.totalSeconds || 0) + seconds;
+  state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  saveState();
+  clearActiveJigsawSave();
+  setTimeout(() => showModal(
+    'Jigsaw Complete!',
+    `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
+    [
+      { label: 'Back to Puzzles', action: returnFromJigsaw },
+      { label: 'Play Again', primary: true, action: () => { state.difficulty = engine.difficulty; showJigsawPreparation(engine.puzzle); } },
+    ],
+    '✓'
+  ), 350);
+}
+
+function returnFromJigsaw() {
+  jigsawGame?.destroy?.();
+  jigsawGame = null;
+  showScreen(mainScreen);
+  puzzleFlow = { step: 'puzzle', puzzleId: null };
+  currentView = 'puzzles';
+  renderView();
+}
+
+class JigsawEngine {
+  static EASY_ROW_COUNTS = [7, 6, 7, 6, 7, 6, 7, 6];
+  static MIN_ZOOM = .2;
+  static MAX_ZOOM = 3;
+
+  constructor(canvas, puzzle, image, difficulty = 'easy', options = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.puzzle = puzzle;
+    this.image = image;
+    this.difficulty = JIGSAW_DIFFICULTIES[difficulty] ? difficulty : 'easy';
+    this.config = JIGSAW_DIFFICULTIES[this.difficulty];
+    this.pieceCount = this.config.pieces;
+    const worlds = { easy: [1400, 900], normal: [2400, 1600], hard: [3600, 2400], insane: [5200, 3400] };
+    [this.worldWidth, this.worldHeight] = options.resumeSave?.world || worlds[this.difficulty];
+    this.seed = Number.isInteger(options.seed) ? options.seed : this.createSeed();
+    this.randomState = this.seed >>> 0;
+    this.resumeSave = options.resumeSave || null;
+    this.pieces = [];
+    this.groups = new Map();
+    this.neighbors = [];
+    this.drawOrder = [];
+    this.drag = null;
+    this.moves = 0;
+    this.placed = 0;
+    this.seconds = 0;
+    this.elapsedBase = 0;
+    this.startedAt = 0;
+    this.completed = false;
+    this.previewing = false;
+    this.framePending = false;
+    this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
+    this.metrics = { geometryMs: 0, setupMs: 0, firstRenderMs: null };
+    this.activePointers = new Map();
+    this.pan = null;
+    this.pinch = null;
+    this.spacePressed = false;
+    this.spatialCellSize = this.pieceCount >= 500 ? 140 : 0;
+    this.spatialIndex = new Map();
+    this.resizeObserver = new ResizeObserver(() => { this.resizeCanvas(); this.requestRender(); });
+    this.onPointerDown = (event) => this.pointerDown(event);
+    this.onPointerMove = (event) => this.pointerMove(event);
+    this.onPointerUp = (event) => this.pointerUp(event);
+    this.onWheel = (event) => this.wheel(event);
+    this.onKeyDown = (event) => { if (event.code === 'Space') { this.spacePressed = true; event.preventDefault(); } };
+    this.onKeyUp = (event) => { if (event.code === 'Space') this.spacePressed = false; };
+  }
+
+  createSeed() {
+    if (globalThis.crypto?.getRandomValues) return crypto.getRandomValues(new Uint32Array(1))[0] | 0;
+    return (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) | 0;
+  }
+
+  random() {
+    this.randomState = (this.randomState + 0x6D2B79F5) | 0;
+    let value = this.randomState;
+    value = Math.imul(value ^ value >>> 15, value | 1);
+    value ^= value + Math.imul(value ^ value >>> 7, value | 61);
+    return ((value ^ value >>> 14) >>> 0) / 4294967296;
+  }
+
+  start() {
+    const setupStarted = performance.now();
+    this.configureBoard();
+    const geometryStarted = performance.now();
+    this.createPieces();
+    this.metrics.geometryMs = performance.now() - geometryStarted;
+    if (this.resumeSave) this.restoreActiveSave(this.resumeSave); else this.scatterPieces();
+    this.rebuildSpatialIndex();
+    this.metrics.setupMs = performance.now() - setupStarted;
+    this.bindEvents();
+    this.resizeCanvas();
+    if (!this.resumeSave) this.applyDefaultWorkingView(false);
+    this.startedAt = Date.now();
+    this.firstRenderStartedAt = performance.now();
+    this.timer = setInterval(() => {
+      if (this.completed) return;
+      this.seconds = this.elapsedBase + Math.floor((Date.now() - this.startedAt) / 1000);
+      $('#jigsawTimerText').textContent = formatTime(this.seconds);
+    }, 250);
+    this.requestRender();
+    if (!this.resumeSave) scheduleActiveJigsawSave(this, true);
+    this.checkpointTimer = setInterval(() => scheduleActiveJigsawSave(this), 30000);
+  }
+
+  configureBoard() {
+    const aspect = this.puzzle.width / this.puzzle.height;
+    const maxWidths = { easy: 760, normal: 1260, hard: 1750, insane: 2400 };
+    const maxHeights = { easy: 620, normal: 1100, hard: 1500, insane: 2000 };
+    let width = maxWidths[this.difficulty];
+    let height = width / aspect;
+    const maxHeight = maxHeights[this.difficulty];
+    if (height > maxHeight) { height = maxHeight; width = height * aspect; }
+    this.board = { x: (this.worldWidth - width) / 2, y: (this.worldHeight - height) / 2, width, height };
+    if (this.difficulty !== 'easy') {
+      const grids = { normal: [[18, 14], [14, 18]], hard: [[25, 20], [20, 25]], insane: [[40, 25], [25, 40]] };
+      const candidates = grids[this.difficulty].map(([cols, rows]) => ({ cols, rows }));
+      this.topology = candidates.reduce((best, candidate) => {
+        const pieceAspect = aspect * candidate.rows / candidate.cols;
+        const error = Math.abs(Math.log(pieceAspect));
+        return !best || error < best.error ? { ...candidate, error } : best;
+      }, null);
+      this.rows = this.topology.rows;
+      this.cols = this.topology.cols;
+    } else {
+      this.rows = JigsawEngine.EASY_ROW_COUNTS.length;
+      this.cols = null;
+      this.topology = { rowCounts: [...JigsawEngine.EASY_ROW_COUNTS] };
+    }
+    this.pieceHeight = height / this.rows;
+  }
+
+  createPieces() {
+    this.pieces = [];
+    if (this.difficulty !== 'easy') this.createRegularPieces();
+    else this.createEasyPieces();
+    if (this.pieces.length !== this.pieceCount) throw new Error(`${this.config.label} Jigsaw must contain exactly ${this.pieceCount} pieces.`);
+    this.initializeGroupsAndNeighbors();
+  }
+
+  finishPieceRecord(piece) {
+    piece.path = this.difficulty !== 'easy' ? this.makeRegularPiecePath(piece) : this.makePiecePath(piece);
+    piece.visualBounds = this.difficulty !== 'easy' ? this.calculateRegularVisualBounds(piece) : this.calculateVisualBounds(piece);
+    piece.snapTolerance = Math.min(
+      piece.visualBounds.maxX - piece.visualBounds.minX,
+      piece.visualBounds.maxY - piece.visualBounds.minY
+    ) * .42;
+    this.pieces.push(piece);
+  }
+
+  createEasyPieces() {
+    // Alternating full-width rows create 7+6+7+6+7+6+7+6 = exactly 52.
+    // Each shared horizontal boundary is one continuous cached contour, so
+    // differently spaced vertical seams never create gaps or overlaps.
+    this.horizontalContours = Array.from({ length: this.rows - 1 }, (_, boundary) => ({
+      signs: Array.from({ length: 7 }, (__, segment) => ((boundary + segment) % 2 ? -1 : 1) * (this.random() < .72 ? 1 : -1)),
+      depths: Array.from({ length: 7 }, (__, segment) => this.pieceHeight * (0.14 + ((boundary + segment) % 3) * 0.018)),
+    }));
+    const vertical = this.topology.rowCounts.map((count) =>
+      Array.from({ length: count - 1 }, () => this.random() < .5 ? -1 : 1));
+    let id = 0;
+    for (let row = 0; row < this.rows; row += 1) {
+      const count = this.topology.rowCounts[row];
+      const width = this.board.width / count;
+      for (let col = 0; col < count; col += 1) {
+        const targetX = this.board.x + col * width;
+        const targetY = this.board.y + row * this.pieceHeight;
+        const edges = {
+          right: col === count - 1 ? 0 : vertical[row][col],
+          left: col === 0 ? 0 : -vertical[row][col - 1],
+        };
+        const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * 0.018));
+        const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id };
+        this.finishPieceRecord(piece);
+        id += 1;
+      }
+    }
+  }
+
+  createRegularPieces() {
+    const width = this.board.width / this.cols;
+    const vertical = Array.from({ length: this.rows }, () => Array.from({ length: this.cols - 1 }, () => this.random() < .5 ? -1 : 1));
+    const horizontal = Array.from({ length: this.rows - 1 }, () => Array.from({ length: this.cols }, () => this.random() < .5 ? -1 : 1));
+    let id = 0;
+    for (let row = 0; row < this.rows; row += 1) for (let col = 0; col < this.cols; col += 1) {
+      const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * .018));
+      const piece = {
+        id, row, col, width, tabDepth,
+        targetX: this.board.x + col * width,
+        targetY: this.board.y + row * this.pieceHeight,
+        x: 0, y: 0, placed: false, groupId: id,
+        edges: {
+          top: row === 0 ? 0 : -horizontal[row - 1][col],
+          right: col === this.cols - 1 ? 0 : vertical[row][col],
+          bottom: row === this.rows - 1 ? 0 : horizontal[row][col],
+          left: col === 0 ? 0 : -vertical[row][col - 1],
+        },
+      };
+      this.finishPieceRecord(piece);
+      id += 1;
+    }
+  }
+
+  initializeGroupsAndNeighbors() {
+    this.groups.clear();
+    this.neighbors = this.pieces.map(() => new Set());
+    this.pieces.forEach((piece) => this.groups.set(piece.id, new Set([piece.id])));
+    const connect = (a, b) => { this.neighbors[a.id].add(b.id); this.neighbors[b.id].add(a.id); };
+    const rows = Array.from({ length: this.rows }, (_, row) => this.pieces.filter((piece) => piece.row === row));
+    rows.forEach((rowPieces) => {
+      for (let index = 0; index < rowPieces.length - 1; index += 1) connect(rowPieces[index], rowPieces[index + 1]);
+    });
+    for (let row = 0; row < this.rows - 1; row += 1) {
+      if (this.difficulty !== 'easy') {
+        for (let col = 0; col < this.cols; col += 1) connect(rows[row][col], rows[row + 1][col]);
+      } else {
+        rows[row].forEach((upper) => rows[row + 1].forEach((lower) => {
+          const sharedWidth = Math.min(upper.targetX + upper.width, lower.targetX + lower.width) - Math.max(upper.targetX, lower.targetX);
+          if (sharedWidth > .001) connect(upper, lower);
+        }));
+      }
+    }
+  }
+
+  makePiecePath(piece) {
+    const path = new Path2D();
+    const x = piece.targetX, w = piece.width, h = this.pieceHeight;
+    const depth = piece.tabDepth;
+    path.moveTo(x, this.horizontalBoundaryY(piece.row - 1, x));
+    this.addHorizontalBoundary(path, piece.row - 1, x, x + w);
+    this.addEdge(path, x + w, this.horizontalBoundaryY(piece.row - 1, x + w), x + w, this.horizontalBoundaryY(piece.row, x + w), 1, 0, piece.edges.right, depth);
+    this.addHorizontalBoundary(path, piece.row, x + w, x);
+    this.addEdge(path, x, this.horizontalBoundaryY(piece.row, x), x, this.horizontalBoundaryY(piece.row - 1, x), -1, 0, piece.edges.left, depth);
+    path.closePath();
+    return path;
+  }
+
+  makeRegularPiecePath(piece) {
+    const path = new Path2D();
+    const x = piece.targetX, y = piece.targetY, w = piece.width, h = this.pieceHeight, depth = piece.tabDepth;
+    path.moveTo(x, y);
+    this.addEdge(path, x, y, x + w, y, 0, -1, piece.edges.top, depth);
+    this.addEdge(path, x + w, y, x + w, y + h, 1, 0, piece.edges.right, depth);
+    this.addEdge(path, x + w, y + h, x, y + h, 0, 1, piece.edges.bottom, depth);
+    this.addEdge(path, x, y + h, x, y, -1, 0, piece.edges.left, depth);
+    path.closePath();
+    return path;
+  }
+
+  calculateRegularVisualBounds(piece) {
+    return {
+      minX: piece.edges.left === 1 ? -piece.tabDepth : 0,
+      maxX: piece.width + (piece.edges.right === 1 ? piece.tabDepth : 0),
+      minY: piece.edges.top === 1 ? -piece.tabDepth : 0,
+      maxY: this.pieceHeight + (piece.edges.bottom === 1 ? piece.tabDepth : 0),
+    };
+  }
+
+  calculateVisualBounds(piece) {
+    let minY = piece.targetY;
+    let maxY = piece.targetY + this.pieceHeight;
+    const segmentWidth = this.board.width / 7;
+    const sampleXs = [piece.targetX, piece.targetX + piece.width];
+    for (let segment = 0; segment < 7; segment += 1) {
+      const peakX = this.board.x + (segment + .5) * segmentWidth;
+      if (peakX > piece.targetX && peakX < piece.targetX + piece.width) sampleXs.push(peakX);
+    }
+    sampleXs.forEach((x) => {
+      minY = Math.min(minY, this.horizontalBoundaryY(piece.row - 1, x), this.horizontalBoundaryY(piece.row, x));
+      maxY = Math.max(maxY, this.horizontalBoundaryY(piece.row - 1, x), this.horizontalBoundaryY(piece.row, x));
+    });
+    return {
+      minX: piece.edges.left === 1 ? -piece.tabDepth : 0,
+      maxX: piece.width + (piece.edges.right === 1 ? piece.tabDepth : 0),
+      minY: minY - piece.targetY,
+      maxY: maxY - piece.targetY,
+    };
+  }
+
+  clampPiecePosition(piece, x, y, margin = 8) {
+    const bounds = piece.visualBounds;
+    return {
+      x: Math.max(margin - bounds.minX, Math.min(this.worldWidth - margin - bounds.maxX, x)),
+      y: Math.max(margin - bounds.minY, Math.min(this.worldHeight - margin - bounds.maxY, y)),
+    };
+  }
+
+  groupMembers(groupId) {
+    return [...(this.groups.get(groupId) || [])].map((id) => this.pieces[id]);
+  }
+
+  pieceWorldBounds(piece) {
+    return {
+      minX: piece.x + piece.visualBounds.minX,
+      maxX: piece.x + piece.visualBounds.maxX,
+      minY: piece.y + piece.visualBounds.minY,
+      maxY: piece.y + piece.visualBounds.maxY,
+    };
+  }
+
+  visibleWorldBounds(padding = 0) {
+    const halfWidth = this.worldWidth / (2 * this.camera.zoom);
+    const halfHeight = this.worldHeight / (2 * this.camera.zoom);
+    return {
+      minX: this.camera.x - halfWidth - padding,
+      maxX: this.camera.x + halfWidth + padding,
+      minY: this.camera.y - halfHeight - padding,
+      maxY: this.camera.y + halfHeight + padding,
+    };
+  }
+
+  groupBounds(groupId, positions = null) {
+    const members = this.groupMembers(groupId);
+    return members.reduce((bounds, piece) => {
+      const position = positions?.get(piece.id) || piece;
+      return {
+        minX: Math.min(bounds.minX, position.x + piece.visualBounds.minX),
+        maxX: Math.max(bounds.maxX, position.x + piece.visualBounds.maxX),
+        minY: Math.min(bounds.minY, position.y + piece.visualBounds.minY),
+        maxY: Math.max(bounds.maxY, position.y + piece.visualBounds.maxY),
+      };
+    }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+  }
+
+  clampGroupTranslation(groupId, dx, dy, positions = null, margin = 8) {
+    const bounds = this.groupBounds(groupId, positions);
+    return {
+      dx: Math.max(margin - bounds.minX, Math.min(this.worldWidth - margin - bounds.maxX, dx)),
+      dy: Math.max(margin - bounds.minY, Math.min(this.worldHeight - margin - bounds.maxY, dy)),
+    };
+  }
+
+  translateGroup(groupId, dx, dy) {
+    this.groupMembers(groupId).forEach((piece) => { piece.x += dx; piece.y += dy; });
+  }
+
+  bringGroupToFront(groupId) {
+    const ids = this.groups.get(groupId) || new Set();
+    this.drawOrder = [...this.drawOrder.filter((id) => !ids.has(id)), ...this.drawOrder.filter((id) => ids.has(id))];
+  }
+
+  horizontalBoundaryY(boundary, x) {
+    const baseY = this.board.y + (boundary + 1) * this.pieceHeight;
+    if (boundary < 0 || boundary >= this.rows - 1) return baseY;
+    const local = Math.max(0, Math.min(this.board.width, x - this.board.x));
+    const segmentWidth = this.board.width / 7;
+    const segment = Math.min(6, Math.floor(local / segmentWidth));
+    const progress = (local - segment * segmentWidth) / segmentWidth;
+    const contour = this.horizontalContours[boundary];
+    const tabProgress = Math.max(0, Math.min(1, (progress - .27) / .46));
+    const tabProfile = progress < .27 || progress > .73 ? 0 : Math.sin(Math.PI * tabProgress) ** 2;
+    return baseY + contour.signs[segment] * contour.depths[segment] * tabProfile;
+  }
+
+  addHorizontalBoundary(path, boundary, fromX, toX) {
+    const steps = Math.max(12, Math.ceil(Math.abs(toX - fromX) / 7));
+    for (let step = 1; step <= steps; step += 1) {
+      const x = fromX + (toX - fromX) * (step / steps);
+      path.lineTo(x, this.horizontalBoundaryY(boundary, x));
+    }
+  }
+
+  addEdge(path, x1, y1, x2, y2, nx, ny, edge, depth) {
+    if (!edge) { path.lineTo(x2, y2); return; }
+    const dx = x2 - x1, dy = y2 - y1, bump = depth * edge;
+    const point = (t, normal = 0) => [x1 + dx * t + nx * normal, y1 + dy * t + ny * normal];
+    path.lineTo(...point(.34));
+    path.bezierCurveTo(...point(.38), ...point(.37, bump), ...point(.46, bump));
+    path.bezierCurveTo(...point(.54, bump), ...point(.62, bump), ...point(.66));
+    path.lineTo(x2, y2);
+  }
+
+  scatterPieces(pieces = this.pieces) {
+    const margin = 24;
+    const gap = 24;
+    const zones = [
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: this.worldWidth - (this.board.x + this.board.width + gap) - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: this.worldHeight - (this.board.y + this.board.height + gap) - margin },
+    ].filter((zone) => zone.width > 50 && zone.height > 50);
+    const centers = [];
+    shuffle(pieces.slice()).forEach((piece, index) => {
+      let candidate = null;
+      for (let attempt = 0; attempt < 70; attempt += 1) {
+        const zone = zones[(index + Math.floor(Math.random() * zones.length)) % zones.length];
+        const maxX = Math.max(zone.x, zone.x + zone.width - piece.width);
+        const maxY = Math.max(zone.y, zone.y + zone.height - this.pieceHeight);
+        const x = zone.x + Math.random() * (maxX - zone.x);
+        const y = zone.y + Math.random() * (maxY - zone.y);
+        const center = { x: x + piece.width / 2, y: y + this.pieceHeight / 2 };
+        candidate = { x, y, center };
+        if (centers.slice(-80).every((prior) => Math.hypot(center.x - prior.x, center.y - prior.y) > Math.min(piece.width, this.pieceHeight) * .48)) break;
+      }
+      const position = this.clampPiecePosition(piece, candidate.x, candidate.y, margin);
+      piece.x = position.x;
+      piece.y = position.y;
+      centers.push(candidate.center);
+    });
+    if (pieces.length === this.pieces.length) {
+      this.drawOrder = shuffle(this.pieces.map((piece) => piece.id));
+    }
+  }
+
+  serializeActiveSave() {
+    const elapsedSeconds = this.elapsedBase + Math.floor((Date.now() - this.startedAt) / 1000);
+    return {
+      v: 1, mode: 'jigsaw', puzzleId: this.puzzle.id, difficulty: this.difficulty,
+      seed: this.seed, elapsedSeconds, moves: this.moves, placed: this.placed,
+      world: [this.worldWidth, this.worldHeight],
+      camera: [this.camera.x, this.camera.y, this.camera.zoom],
+      drawOrder: [...this.drawOrder],
+      pieces: this.pieces.map((piece) => [Math.round(piece.x * 100) / 100, Math.round(piece.y * 100) / 100, piece.groupId, piece.placed ? 1 : 0]),
+      updatedAt: Date.now(),
+    };
+  }
+
+  restoreActiveSave(save) {
+    this.groups.clear();
+    save.pieces.forEach((record, id) => {
+      const piece = this.pieces[id];
+      [piece.x, piece.y, piece.groupId] = record;
+      piece.placed = !!record[3];
+      if (!this.groups.has(piece.groupId)) this.groups.set(piece.groupId, new Set());
+      this.groups.get(piece.groupId).add(id);
+    });
+    this.drawOrder = save.drawOrder.length === this.pieceCount ? [...save.drawOrder] : this.pieces.map((piece) => piece.id);
+    this.camera = { x: save.camera[0], y: save.camera[1], zoom: save.camera[2] };
+    this.moves = Number(save.moves || 0);
+    this.placed = this.pieces.filter((piece) => piece.placed).length;
+    this.elapsedBase = Number(save.elapsedSeconds || 0);
+    this.seconds = this.elapsedBase;
+    $('#jigsawTimerText').textContent = formatTime(this.seconds);
+    $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
+    $('#jigsawMoveText').textContent = String(this.moves);
+  }
+
+  rebuildSpatialIndex() {
+    if (!this.spatialCellSize) return;
+    this.spatialIndex.clear();
+    this.pieces.forEach((piece) => {
+      if (piece.placed) return;
+      const bounds = this.pieceWorldBounds(piece);
+      for (let x = Math.floor(bounds.minX / this.spatialCellSize); x <= Math.floor(bounds.maxX / this.spatialCellSize); x += 1) {
+        for (let y = Math.floor(bounds.minY / this.spatialCellSize); y <= Math.floor(bounds.maxY / this.spatialCellSize); y += 1) {
+          const key = `${x}:${y}`;
+          if (!this.spatialIndex.has(key)) this.spatialIndex.set(key, new Set());
+          this.spatialIndex.get(key).add(piece.id);
+        }
+      }
+    });
+  }
+
+  hitTestOrder(point) {
+    if (!this.spatialCellSize) return this.drawOrder;
+    const ids = this.spatialIndex.get(`${Math.floor(point.x / this.spatialCellSize)}:${Math.floor(point.y / this.spatialCellSize)}`) || new Set();
+    return this.drawOrder.filter((id) => ids.has(id));
+  }
+
+  bindEvents() {
+    this.canvas.addEventListener('pointerdown', this.onPointerDown);
+    this.canvas.addEventListener('pointermove', this.onPointerMove);
+    this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerUp);
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.canvas.addEventListener('keydown', this.onKeyDown);
+    this.canvas.addEventListener('keyup', this.onKeyUp);
+    this.resizeObserver.observe(this.canvas);
+  }
+
+  resizeCanvas() {
+    const rect = this.canvas.getBoundingClientRect();
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const cssAspect = this.worldWidth / this.worldHeight;
+    let width = rect.width, height = width / cssAspect;
+    if (height > rect.height) { height = rect.height; width = height * cssAspect; }
+    this.canvas.style.width = `${Math.floor(width)}px`;
+    this.canvas.style.height = `${Math.floor(height)}px`;
+    this.canvas.width = Math.max(1, Math.floor(width * ratio));
+    this.canvas.height = Math.max(1, Math.floor(height * ratio));
+    this.scaleX = width / this.worldWidth;
+    this.scaleY = height / this.worldHeight;
+    this.pixelRatio = ratio;
+  }
+
+  canvasScreenPoint(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / this.scaleX, y: (event.clientY - rect.top) / this.scaleY };
+  }
+
+  worldToScreen(point) {
+    return {
+      x: (point.x - this.camera.x) * this.camera.zoom + this.worldWidth / 2,
+      y: (point.y - this.camera.y) * this.camera.zoom + this.worldHeight / 2,
+    };
+  }
+
+  screenToWorld(point) {
+    return {
+      x: this.camera.x + (point.x - this.worldWidth / 2) / this.camera.zoom,
+      y: this.camera.y + (point.y - this.worldHeight / 2) / this.camera.zoom,
+    };
+  }
+
+  canvasPoint(event) {
+    return this.screenToWorld(this.canvasScreenPoint(event));
+  }
+
+  constrainCamera() {
+    const overscroll = 160;
+    const halfWidth = this.worldWidth / (2 * this.camera.zoom);
+    const halfHeight = this.worldHeight / (2 * this.camera.zoom);
+    const minX = -overscroll + halfWidth, maxX = this.worldWidth + overscroll - halfWidth;
+    const minY = -overscroll + halfHeight, maxY = this.worldHeight + overscroll - halfHeight;
+    this.camera.x = minX > maxX ? this.worldWidth / 2 : Math.max(minX, Math.min(maxX, this.camera.x));
+    this.camera.y = minY > maxY ? this.worldHeight / 2 : Math.max(minY, Math.min(maxY, this.camera.y));
+  }
+
+  setZoomAtScreenPoint(zoom, screenPoint) {
+    const anchor = this.screenToWorld(screenPoint);
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, zoom));
+    this.camera.x = anchor.x - (screenPoint.x - this.worldWidth / 2) / this.camera.zoom;
+    this.camera.y = anchor.y - (screenPoint.y - this.worldHeight / 2) / this.camera.zoom;
+    this.constrainCamera();
+    this.requestRender();
+    scheduleActiveJigsawSave(this);
+  }
+
+  zoomBy(factor) {
+    this.setZoomAtScreenPoint(this.camera.zoom * factor, { x: this.worldWidth / 2, y: this.worldHeight / 2 });
+  }
+
+  wheel(event) {
+    event.preventDefault();
+    const screenPoint = this.canvasScreenPoint(event);
+    this.setZoomAtScreenPoint(this.camera.zoom * Math.exp(-event.deltaY * .0015), screenPoint);
+  }
+
+  fitBoard() {
+    const padding = 80;
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM,
+      Math.min((this.worldWidth - padding * 2) / this.board.width, (this.worldHeight - padding * 2) / this.board.height)));
+    this.camera.x = this.board.x + this.board.width / 2;
+    this.camera.y = this.board.y + this.board.height / 2;
+    this.constrainCamera();
+    this.requestRender();
+    scheduleActiveJigsawSave(this);
+  }
+
+  fitAll() {
+    const padding = 60;
+    this.camera = {
+      x: this.worldWidth / 2,
+      y: this.worldHeight / 2,
+      zoom: Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM,
+        Math.min((this.worldWidth - padding * 2) / this.worldWidth, (this.worldHeight - padding * 2) / this.worldHeight))),
+    };
+    this.constrainCamera();
+    this.requestRender();
+    scheduleActiveJigsawSave(this);
+  }
+
+  defaultWorkingCamera() {
+    if (this.difficulty === 'easy' || this.difficulty === 'normal') {
+      return { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
+    }
+    const averagePieceWidth = this.pieces.reduce((total, piece) => total + piece.width, 0) / this.pieces.length;
+    const smallerPieceDimension = Math.min(averagePieceWidth, this.pieceHeight);
+    const cssPixelsPerWorldUnit = Math.min(this.scaleX || 1, this.scaleY || 1);
+    const targetPiecePixels = 24;
+    const zoom = targetPiecePixels / Math.max(1, smallerPieceDimension * cssPixelsPerWorldUnit);
+    return {
+      x: this.board.x + this.board.width / 2,
+      y: this.board.y + this.board.height / 2,
+      zoom: Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, zoom)),
+    };
+  }
+
+  applyDefaultWorkingView(persist = true) {
+    this.camera = this.defaultWorkingCamera();
+    this.constrainCamera();
+    this.requestRender();
+    if (persist) scheduleActiveJigsawSave(this);
+  }
+
+  resetView() {
+    this.applyDefaultWorkingView();
+  }
+
+  pointerDown(event) {
+    if (this.completed || this.previewing) return;
+    this.canvas.focus({ preventScroll: true });
+    const screenPoint = this.canvasScreenPoint(event);
+    this.activePointers.set(event.pointerId, screenPoint);
+    this.canvas.setPointerCapture(event.pointerId);
+    if (this.activePointers.size >= 2) { this.beginPinch(); return; }
+    const point = this.screenToWorld(screenPoint);
+    const forcePan = event.button === 1 || this.spacePressed;
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (!forcePan) {
+      const hitOrder = this.hitTestOrder(point);
+      for (let index = hitOrder.length - 1; index >= 0; index -= 1) {
+        const piece = this.pieces[hitOrder[index]];
+        if (piece.placed) continue;
+        const bounds = this.pieceWorldBounds(piece);
+        if (point.x < bounds.minX || point.x > bounds.maxX || point.y < bounds.minY || point.y > bounds.maxY) continue;
+        const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+        if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
+          const groupId = piece.groupId;
+          const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
+          this.drag = { pointerId: event.pointerId, piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startScreen: screenPoint, moved: false };
+          this.bringGroupToFront(groupId);
+          this.canvas.style.cursor = 'grabbing';
+          this.requestRender();
+          return;
+        }
+      }
+    }
+    this.pan = { pointerId: event.pointerId, startScreen: screenPoint, startCamera: { x: this.camera.x, y: this.camera.y } };
+    this.canvas.style.cursor = 'grabbing';
+  }
+
+  pointerMove(event) {
+    if (!this.activePointers.has(event.pointerId)) return;
+    const screenPoint = this.canvasScreenPoint(event);
+    this.activePointers.set(event.pointerId, screenPoint);
+    if (this.pinch) { this.updatePinch(); return; }
+    if (this.drag?.pointerId === event.pointerId) {
+      this.updateDraggedPiece(event);
+      if (Math.hypot(screenPoint.x - this.drag.startScreen.x, screenPoint.y - this.drag.startScreen.y) > 6) this.drag.moved = true;
+      this.requestRender();
+      return;
+    }
+    if (this.pan?.pointerId === event.pointerId) {
+      this.camera.x = this.pan.startCamera.x - (screenPoint.x - this.pan.startScreen.x) / this.camera.zoom;
+      this.camera.y = this.pan.startCamera.y - (screenPoint.y - this.pan.startScreen.y) / this.camera.zoom;
+      this.constrainCamera();
+      this.requestRender();
+    }
+  }
+
+  beginPinch() {
+    if (this.drag) {
+      this.groupMembers(this.drag.groupId).forEach((piece) => {
+        const start = this.drag.startPositions.get(piece.id);
+        piece.x = start.x; piece.y = start.y;
+      });
+      this.drag = null;
+    }
+    this.pan = null;
+    const points = [...this.activePointers.values()].slice(0, 2);
+    const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    this.pinch = {
+      startDistance: Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)),
+      startZoom: this.camera.zoom,
+      anchorWorld: this.screenToWorld(midpoint),
+    };
+    this.canvas.style.cursor = 'grabbing';
+    this.requestRender();
+  }
+
+  updatePinch() {
+    const points = [...this.activePointers.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, this.pinch.startZoom * distance / this.pinch.startDistance));
+    this.camera.x = this.pinch.anchorWorld.x - (midpoint.x - this.worldWidth / 2) / this.camera.zoom;
+    this.camera.y = this.pinch.anchorWorld.y - (midpoint.y - this.worldHeight / 2) / this.camera.zoom;
+    this.constrainCamera();
+    this.requestRender();
+  }
+
+  updateDraggedPiece(event) {
+    const point = this.canvasPoint(event);
+    const anchorStart = this.drag.startPositions.get(this.drag.piece.id);
+    const rawDx = point.x - this.drag.offsetX - anchorStart.x;
+    const rawDy = point.y - this.drag.offsetY - anchorStart.y;
+    const translation = this.clampGroupTranslation(this.drag.groupId, rawDx, rawDy, this.drag.startPositions);
+    this.groupMembers(this.drag.groupId).forEach((piece) => {
+      const start = this.drag.startPositions.get(piece.id);
+      piece.x = start.x + translation.dx;
+      piece.y = start.y + translation.dy;
+    });
+    return point;
+  }
+
+  snapDistance(piece) {
+    return Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY);
+  }
+
+  tryPlaceGroup(groupId) {
+    const members = this.groupMembers(groupId);
+    if (!members.length || members.some((piece) => piece.placed)) return false;
+    const anchor = members[0];
+    const tolerance = Math.min(...members.map((piece) => piece.snapTolerance));
+    if (this.snapDistance(anchor) > tolerance) return false;
+    const groupDx = anchor.x - anchor.targetX;
+    const groupDy = anchor.y - anchor.targetY;
+    const rigid = members.every((piece) =>
+      Math.abs((piece.x - piece.targetX) - groupDx) < .01 &&
+      Math.abs((piece.y - piece.targetY) - groupDy) < .01);
+    if (!rigid) return false;
+    let newlyPlaced = 0;
+    members.forEach((piece) => {
+      piece.x = piece.targetX;
+      piece.y = piece.targetY;
+      if (!piece.placed) { piece.placed = true; newlyPlaced += 1; }
+    });
+    this.placed += newlyPlaced;
+    $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
+    return true;
+  }
+
+  tryConnectGroup(movingGroupId) {
+    const movingMembers = this.groupMembers(movingGroupId);
+    if (!movingMembers.length || movingMembers.some((piece) => piece.placed)) return null;
+    let best = null;
+    movingMembers.forEach((movingPiece) => {
+      this.neighbors[movingPiece.id].forEach((neighborId) => {
+        const stationaryPiece = this.pieces[neighborId];
+        const stationaryGroupId = stationaryPiece.groupId;
+        if (stationaryGroupId === movingGroupId || stationaryPiece.placed) return;
+        const expectedDx = stationaryPiece.targetX - movingPiece.targetX;
+        const expectedDy = stationaryPiece.targetY - movingPiece.targetY;
+        const dx = stationaryPiece.x - movingPiece.x - expectedDx;
+        const dy = stationaryPiece.y - movingPiece.y - expectedDy;
+        const tolerance = Math.min(movingPiece.snapTolerance, stationaryPiece.snapTolerance);
+        const error = Math.hypot(dx, dy);
+        if (error > tolerance) return;
+        const clamped = this.clampGroupTranslation(movingGroupId, dx, dy);
+        if (Math.abs(clamped.dx - dx) > .01 || Math.abs(clamped.dy - dy) > .01) return;
+        const normalizedError = error / tolerance;
+        if (!best || normalizedError < best.normalizedError) best = { stationaryGroupId, dx, dy, normalizedError };
+      });
+    });
+    if (!best) return null;
+    this.translateGroup(movingGroupId, best.dx, best.dy);
+    return this.mergeGroups(movingGroupId, best.stationaryGroupId);
+  }
+
+  mergeGroups(movingGroupId, stationaryGroupId) {
+    if (movingGroupId === stationaryGroupId) return stationaryGroupId;
+    const moving = this.groups.get(movingGroupId);
+    const stationary = this.groups.get(stationaryGroupId);
+    if (!moving || !stationary) return null;
+    moving.forEach((id) => { stationary.add(id); this.pieces[id].groupId = stationaryGroupId; });
+    this.groups.delete(movingGroupId);
+    const pulseUntil = performance.now() + 260;
+    stationary.forEach((id) => { this.pieces[id].connectedPulseUntil = pulseUntil; });
+    this.bringGroupToFront(stationaryGroupId);
+    this.canvas.dispatchEvent(new CustomEvent('jigsaw:connected', { detail: { groupId: stationaryGroupId, size: stationary.size } }));
+    setTimeout(() => this.requestRender(), 270);
+    return stationaryGroupId;
+  }
+
+  pointerUp(event) {
+    if (!this.activePointers.has(event.pointerId)) return;
+    const cancelled = event.type === 'pointercancel';
+    if (this.pinch) {
+      this.activePointers.delete(event.pointerId);
+      if (this.activePointers.size >= 2) {
+        this.beginPinch();
+      } else {
+        this.pinch = null;
+        const remaining = [...this.activePointers.entries()][0];
+        this.pan = remaining ? { pointerId: remaining[0], startScreen: remaining[1], startCamera: { x: this.camera.x, y: this.camera.y } } : null;
+      }
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      this.canvas.style.cursor = this.pan ? 'grabbing' : 'grab';
+      scheduleActiveJigsawSave(this);
+      return;
+    }
+    if (this.pan?.pointerId === event.pointerId) {
+      this.pan = null;
+      this.activePointers.delete(event.pointerId);
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      this.canvas.style.cursor = 'grab';
+      scheduleActiveJigsawSave(this);
+      return;
+    }
+    if (this.drag?.pointerId !== event.pointerId) {
+      this.activePointers.delete(event.pointerId);
+      return;
+    }
+    if (!cancelled) {
+      const releasePoint = this.updateDraggedPiece(event);
+      const releaseScreen = this.worldToScreen(releasePoint);
+      if (Math.hypot(releaseScreen.x - this.drag.startScreen.x, releaseScreen.y - this.drag.startScreen.y) > 6) this.drag.moved = true;
+    }
+    const { groupId, moved } = this.drag;
+    if (moved) {
+      this.moves += 1;
+      $('#jigsawMoveText').textContent = String(this.moves);
+      if (!cancelled && !this.tryPlaceGroup(groupId)) {
+        const mergedGroupId = this.tryConnectGroup(groupId);
+        if (mergedGroupId !== null) this.tryPlaceGroup(mergedGroupId);
+      }
+    }
+    if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+    this.activePointers.delete(event.pointerId);
+    this.drag = null;
+    this.rebuildSpatialIndex();
+    this.canvas.style.cursor = 'grab';
+    this.requestRender();
+    if (moved) scheduleActiveJigsawSave(this);
+    if (this.placed === this.pieceCount) finishJigsaw(this);
+  }
+
+  gatherLoosePieces() {
+    if (this.completed || this.previewing) return;
+    const looseGroupIds = [...this.groups.keys()].filter((groupId) => this.groupMembers(groupId).every((piece) => !piece.placed));
+    if (!looseGroupIds.length) return;
+    const margin = 24, gap = 24;
+    const zones = [
+      { x: margin, y: margin, width: this.board.x - gap - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x + this.board.width + gap, y: margin, width: this.worldWidth - (this.board.x + this.board.width + gap) - margin, height: this.worldHeight - margin * 2 },
+      { x: this.board.x, y: margin, width: this.board.width, height: this.board.y - gap - margin },
+      { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: this.worldHeight - (this.board.y + this.board.height + gap) - margin },
+    ].filter((zone) => zone.width > 50 && zone.height > 50);
+    const centers = [];
+    shuffle(looseGroupIds).forEach((groupId, index) => {
+      const bounds = this.groupBounds(groupId);
+      const width = bounds.maxX - bounds.minX, height = bounds.maxY - bounds.minY;
+      const fittingZones = zones.filter((zone) => width <= zone.width && height <= zone.height);
+      const candidates = fittingZones.length ? fittingZones : [{ x: margin, y: margin, width: this.worldWidth - margin * 2, height: this.worldHeight - margin * 2 }];
+      let candidate;
+      for (let attempt = 0; attempt < 70; attempt += 1) {
+        const zone = candidates[(index + Math.floor(Math.random() * candidates.length)) % candidates.length];
+        const x = zone.x + Math.random() * Math.max(0, zone.width - width);
+        const y = zone.y + Math.random() * Math.max(0, zone.height - height);
+        const center = { x: x + width / 2, y: y + height / 2 };
+        candidate = { x, y, center };
+        if (centers.slice(-80).every((prior) => Math.hypot(center.x - prior.x, center.y - prior.y) > Math.min(width, height) * .4)) break;
+      }
+      const translation = this.clampGroupTranslation(groupId, candidate.x - bounds.minX, candidate.y - bounds.minY, null, margin);
+      this.translateGroup(groupId, translation.dx, translation.dy);
+      centers.push(candidate.center);
+    });
+    const looseIds = new Set(looseGroupIds.flatMap((groupId) => [...this.groups.get(groupId)]));
+    const looseOrder = shuffle(looseGroupIds).flatMap((groupId) => this.drawOrder.filter((id) => this.groups.get(groupId).has(id)));
+    this.drawOrder = [...this.drawOrder.filter((id) => !looseIds.has(id)), ...looseOrder];
+    this.requestRender();
+    this.rebuildSpatialIndex();
+    scheduleActiveJigsawSave(this);
+    showToast('Loose pieces gathered');
+  }
+
+  requestRender() {
+    if (this.framePending) return;
+    this.framePending = true;
+    requestAnimationFrame(() => { this.framePending = false; this.render(); });
+  }
+
+  render() {
+    const ctx = this.ctx;
+    ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
+    ctx.clearRect(0, 0, this.worldWidth, this.worldHeight);
+    ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
+    ctx.save();
+    ctx.translate(this.worldWidth / 2, this.worldHeight / 2);
+    ctx.scale(this.camera.zoom, this.camera.zoom);
+    ctx.translate(-this.camera.x, -this.camera.y);
+    const surface = ctx.createRadialGradient(this.worldWidth / 2, this.worldHeight / 2, 80, this.worldWidth / 2, this.worldHeight / 2, Math.max(this.worldWidth, this.worldHeight) * .55);
+    surface.addColorStop(0, '#17171c'); surface.addColorStop(1, '#0e0e11');
+    ctx.fillStyle = surface; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
+    ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
+    ctx.restore();
+    ctx.fillStyle = '#17171c'; ctx.fillRect(this.board.x, this.board.y, this.board.width, this.board.height);
+    ctx.strokeStyle = '#62626e'; ctx.lineWidth = 3 / this.camera.zoom; ctx.setLineDash([10 / this.camera.zoom, 9 / this.camera.zoom]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
+    ctx.fillStyle = '#777782'; ctx.font = `800 ${13 / this.camera.zoom}px system-ui`; ctx.textAlign = 'center';
+    ctx.fillText('ASSEMBLY AREA', this.board.x + this.board.width / 2, this.board.y - 20);
+    if (this.previewing || this.completed) {
+      ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2 / this.camera.zoom; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.restore();
+      return;
+    }
+    const visible = this.visibleWorldBounds(36 / this.camera.zoom);
+    this.lastRenderedPieceCount = 0;
+    this.drawOrder.forEach((id) => {
+      const piece = this.pieces[id];
+      const bounds = this.pieceWorldBounds(piece);
+      if (bounds.maxX < visible.minX || bounds.minX > visible.maxX || bounds.maxY < visible.minY || bounds.minY > visible.maxY) return;
+      this.drawPiece(piece);
+      this.lastRenderedPieceCount += 1;
+    });
+    ctx.restore();
+    if (this.metrics.firstRenderMs === null && this.firstRenderStartedAt) this.metrics.firstRenderMs = performance.now() - this.firstRenderStartedAt;
+  }
+
+  drawPiece(piece) {
+    const ctx = this.ctx, dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+    ctx.save(); ctx.translate(dx, dy);
+    ctx.save(); ctx.clip(piece.path);
+    const simplified = this.pieceCount >= 500 && this.camera.zoom < .45;
+    if (!simplified) { ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = (piece.placed ? 2 : 9) / this.camera.zoom; ctx.shadowOffsetY = (piece.placed ? 0 : 4) / this.camera.zoom; }
+    ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
+    ctx.restore();
+    const connecting = (piece.connectedPulseUntil || 0) > performance.now();
+    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : connecting ? '#b9ff36' : 'rgba(255,255,255,.72)';
+    ctx.lineWidth = (connecting ? 4 : piece.placed ? 1.5 : 2.2) / this.camera.zoom; ctx.stroke(piece.path); ctx.restore();
+  }
+
+  preview() {
+    if (this.completed || this.previewing) return;
+    this.previewing = true; jigsawScreen.classList.add('previewing'); this.requestRender();
+    clearTimeout(this.previewTimer);
+    this.previewTimer = setTimeout(() => { this.previewing = false; jigsawScreen.classList.remove('previewing'); this.requestRender(); }, 1800);
+  }
+
+  renderCompleted() { this.requestRender(); }
+  stopTimer() {
+    clearInterval(this.timer);
+    this.seconds = Math.max(1, this.elapsedBase + Math.floor((Date.now() - this.startedAt) / 1000));
+    $('#jigsawTimerText').textContent = formatTime(this.seconds);
+  }
+  destroy() {
+    clearInterval(this.timer); clearInterval(this.checkpointTimer); clearTimeout(this.previewTimer); this.resizeObserver.disconnect();
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown);
+    this.canvas.removeEventListener('pointermove', this.onPointerMove);
+    this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerUp);
+    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.canvas.removeEventListener('keydown', this.onKeyDown);
+    this.canvas.removeEventListener('keyup', this.onKeyUp);
+    this.activePointers.clear(); this.drag = null; this.pan = null; this.pinch = null;
+  }
 }
 
 async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
@@ -600,6 +1792,7 @@ async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
     console.error('Firestore sync failed:', cloudError);
   }
 
+  await hydrateActiveJigsawSave();
   enterApp();
   return cloudStatus;
 }
@@ -810,22 +2003,56 @@ function escapeHtml(v) { return String(v).replace(/[&<>'"]/g, (c) => ({'&':'&amp
 $('#guestBtn').addEventListener('click', () => {
   if (!state.profile?.name) state.profile = structuredClone(defaultState.profile);
   saveState();
+  activeJigsawSave = readLocalActiveJigsaw();
   enterApp();
 });
 $('#googleBtn').addEventListener('click', () => signInWithProvider('google'));
 $('#facebookBtn').addEventListener('click', () => signInWithProvider('facebook'));
-$$('[data-nav]').forEach((btn) => btn.addEventListener('click', () => navigate(btn.dataset.nav)));
+$$('[data-nav]').forEach((btn) => btn.addEventListener('click', () => {
+  if (btn.dataset.nav === 'puzzles') puzzleFlow = { step: 'mode', puzzleId: null };
+  navigate(btn.dataset.nav);
+}));
 $('#exitGameBtn').addEventListener('click', () => {
   clearInterval(timerHandle);
+  const puzzleId = game?.puzzle?.id || puzzleFlow.puzzleId;
   game = null;
   showScreen(mainScreen);
-  navigate('puzzles');
+  puzzleFlow = { step: 'difficulty', puzzleId };
+  currentView = 'puzzles';
+  renderView();
 });
 $('#previewBtn').addEventListener('click', previewPuzzle);
 $('#reshuffleBtn').addEventListener('click', reshuffle);
+$('#jigsawPrepBackBtn').addEventListener('click', () => {
+  jigsawGame = null;
+  showScreen(mainScreen);
+  currentView = 'puzzles';
+  puzzleFlow.step = 'difficulty';
+  renderView();
+});
+$('#startJigsawBtn').addEventListener('click', () => startJigsaw());
+$('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
+$('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePieces?.());
+$('#jigsawZoomOutBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1 / 1.25));
+$('#jigsawZoomInBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1.25));
+$('#jigsawFitBtn').addEventListener('click', () => jigsawGame?.fitBoard?.());
+$('#jigsawFitAllBtn').addEventListener('click', () => jigsawGame?.fitAll?.());
+$('#jigsawResetViewBtn').addEventListener('click', () => jigsawGame?.resetView?.());
+$('#exitJigsawBtn').addEventListener('click', () => {
+  if (!jigsawGame || jigsawGame.completed) return returnFromJigsaw();
+  showModal('Leave This Puzzle?', 'Save your progress for later, keep playing, or abandon this puzzle.', [
+    { label: 'Keep Playing' },
+    { label: 'Abandon Puzzle', action: () => showModal('Abandon Puzzle?', 'This permanently deletes the unfinished Jigsaw save.', [
+      { label: 'Cancel' },
+      { label: 'Delete Save', primary: true, action: async () => { await clearActiveJigsawSave(); returnFromJigsaw(); } },
+    ], '!') },
+    { label: 'Save & Exit', primary: true, action: async () => { await scheduleActiveJigsawSave(jigsawGame, true); returnFromJigsaw(); } },
+  ], '↩');
+});
 
 window.addEventListener('keydown', (e) => {
   if (gameScreen.classList.contains('active') && e.key === 'Escape') $('#exitGameBtn').click();
+  if (jigsawScreen.classList.contains('active') && e.key === 'Escape') $('#exitJigsawBtn').click();
 });
 window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); });
 

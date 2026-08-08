@@ -1,4 +1,4 @@
-const CACHE = 'gutter-grin-puzzle-panic-v3';
+const CACHE = 'gutter-grin-puzzle-panic-v14';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
   './assets/smooch-mode.webp', './assets/cat-mode.webp', './assets/yas-queens.webp',

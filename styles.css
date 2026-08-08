@@ -145,6 +145,32 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
 .puzzle-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px; color:var(--muted); font-size:11px; }
 .complete-dot { color:var(--accent-2); }
 
+.flow-head { margin:4px 0 22px; }
+.flow-head .eyebrow { margin:0 0 7px; }
+.flow-head h2 { margin:0; font-size:clamp(30px,7vw,46px); letter-spacing:-.045em; }
+.flow-head > p:last-child { margin:7px 0 0; color:var(--muted); }
+.flow-back { margin:0 0 18px; padding:0; background:none; border:0; color:var(--accent-2); font-weight:850; cursor:pointer; }
+.mode-grid { display:grid; gap:14px; }
+.mode-card { min-height:170px; display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:center; padding:22px; text-align:left; color:var(--text); background:linear-gradient(135deg,#281719,#18181c); border:1px solid #543033; border-radius:22px; cursor:pointer; box-shadow:var(--shadow); }
+.mode-card.jigsaw { background:linear-gradient(135deg,#1b2412,#18181c); border-color:#3d5126; }
+.mode-card > span:nth-child(2) { min-width:0; }
+.mode-card strong { display:block; font-size:22px; text-transform:uppercase; letter-spacing:-.02em; }
+.mode-card small { display:block; margin-top:7px; color:#c2c2ca; line-height:1.5; }
+.mode-card b { grid-column:2; color:var(--accent-2); font-size:13px; }
+.mode-icon { width:64px; height:64px; display:grid; place-items:center; border-radius:18px; background:rgba(0,0,0,.28); font-size:32px; grid-row:1 / span 2; }
+.difficulty-grid { display:grid; gap:11px; }
+.difficulty-card { display:grid; grid-template-columns:1fr auto; gap:7px 14px; width:100%; padding:17px; text-align:left; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:17px; cursor:pointer; }
+.difficulty-card.selected { border-color:var(--accent-2); box-shadow:inset 0 0 0 1px var(--accent-2); }
+.difficulty-card strong,.difficulty-card small { display:block; }
+.difficulty-card strong { font-size:18px; }
+.difficulty-card small { margin-top:3px; color:var(--muted); }
+.reward-line { color:var(--gold); font-weight:850; align-self:center; }
+.bonus-line { grid-column:1 / -1; padding-top:5px; border-top:1px solid var(--line); }
+.play-panel { margin-top:18px; padding:21px; text-align:center; background:linear-gradient(135deg,#211314,#17200e); border:1px solid var(--line); border-radius:20px; }
+.play-panel .eyebrow { margin:0 0 6px; }
+.play-panel h3 { margin:0; font-size:23px; }
+.play-panel > p:not(.eyebrow) { margin:5px 0 17px; color:var(--muted); }
+
 .difficulty-bar { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:12px; display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:14px; }
 .difficulty-bar label { font-size:13px; color:var(--muted); }
 .select { background:var(--panel-2); border:1px solid var(--line); color:var(--text); border-radius:12px; padding:10px 12px; font-weight:800; }
@@ -218,12 +244,33 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
 .game-actions { width:min(100%,760px); margin:0 auto; padding:0 14px calc(18px + env(safe-area-inset-bottom)); display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .game-tip { color:var(--muted); font-size:11px; text-align:right; }
 
+.jigsaw-prep-screen,.jigsaw-screen { flex-direction:column; background:#09090b; }
+.jigsaw-prep-screen .topbar { display:grid; grid-template-columns:48px 1fr auto; gap:12px; }
+.jigsaw-prep-screen .topbar > strong { text-align:center; }
+.jigsaw-prep { width:min(100%,820px); margin:0 auto; padding:24px 18px 40px; display:grid; gap:20px; }
+.prep-copy h2 { margin:0; font-size:clamp(30px,7vw,48px); letter-spacing:-.04em; }
+.prep-copy > p:last-child { color:var(--muted); line-height:1.5; }
+.prep-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:18px; }
+.prep-stats span { padding:12px 8px; text-align:center; background:var(--panel); border:1px solid var(--line); border-radius:13px; }
+.prep-stats strong,.prep-stats small { display:block; }
+.prep-stats small { margin-top:3px; color:var(--muted); font-size:9px; }
+.prep-image { width:100%; max-height:52vh; object-fit:contain; background:#111; border:1px solid var(--line); border-radius:18px; box-shadow:var(--shadow); }
+.jigsaw-stage { flex:1; min-height:0; width:100%; padding:10px; display:grid; place-items:center; overflow:hidden; }
+#jigsawCanvas { display:block; width:100%; height:100%; max-width:1200px; max-height:900px; background:#121216; border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); touch-action:none; cursor:grab; }
+.jigsaw-controls { padding:4px 14px calc(12px + env(safe-area-inset-bottom)); display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px 12px; }
+.jigsaw-controls .btn { padding:9px 12px; font-size:12px; white-space:nowrap; }
+.camera-controls { display:flex; flex-wrap:wrap; justify-content:center; gap:5px; }
+.camera-controls .btn { min-width:36px; padding-inline:10px; }
+.jigsaw-tip { margin:0; color:var(--muted); font-size:11px; text-align:center; }
+.jigsaw-screen.previewing #jigsawCanvas { cursor:wait; }
+
 .modal-backdrop { position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.76); display:grid; place-items:center; padding:18px; }
 .modal-backdrop[hidden] { display:none; }
 .modal { width:min(100%,420px); border:1px solid var(--line); background:#19191e; border-radius:24px; padding:26px; box-shadow:var(--shadow); text-align:center; }
 .modal-icon { width:58px; height:58px; margin:0 auto 12px; border-radius:50%; display:grid; place-items:center; background:var(--accent-2); color:#111; font-size:28px; font-weight:1000; }
 .modal h2 { margin:0 0 8px; }
 .modal p { color:var(--muted); line-height:1.5; margin:0; }
+.modal p { white-space:pre-line; }
 .modal-actions { display:grid; gap:9px; margin-top:20px; }
 
 .toast { position:fixed; left:50%; bottom:92px; transform:translateX(-50%); background:#f3f3ef; color:#151518; border-radius:999px; padding:10px 15px; font-weight:800; font-size:12px; z-index:120; box-shadow:var(--shadow); animation:toast-in .2s ease; }
@@ -233,6 +280,7 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
   .view-host { padding-top:28px; }
   .puzzle-grid { grid-template-columns: repeat(3, minmax(0,1fr)); gap:16px; }
   .shop-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .mode-grid,.difficulty-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .bottom-nav { left:50%; right:auto; transform:translateX(-50%); width:min(560px,calc(100% - 28px)); bottom:14px; border:1px solid var(--line); border-radius:20px; padding:9px 10px; }
 }
 
@@ -246,4 +294,7 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
   .game-stage { padding:8px 14px; }
   .puzzle-board { max-height:72vh; width:min(72vh,720px); }
   .game-actions { padding-bottom:8px; }
+  .jigsaw-stage { padding:6px 10px; }
+  .jigsaw-tip { display:none; }
+  .jigsaw-controls { padding-bottom:6px; }
 }

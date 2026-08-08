@@ -74,6 +74,55 @@
         <span class="game-tip">Tap one piece, then another, to swap them.</span>
       </div>
     </section>
+
+    <section id="jigsawPrepScreen" class="screen jigsaw-prep-screen">
+      <header class="topbar">
+        <button id="jigsawPrepBackBtn" class="icon-btn" aria-label="Back to difficulty selection">←</button>
+        <strong>Jigsaw Setup</strong>
+        <div class="wallet-pill"><span>🪙</span><strong id="prepCoinCount">0</strong></div>
+      </header>
+      <main class="jigsaw-prep">
+        <div class="prep-copy">
+          <p class="eyebrow" id="jigsawPrepMode">CLASSIC JIGSAW · EASY</p>
+          <h2 id="jigsawPrepTitle">Puzzle</h2>
+          <div class="prep-stats">
+            <span><strong id="jigsawPrepPieces">52</strong><small>PIECES</small></span>
+            <span><strong id="jigsawPrepReward">+2</strong><small>BASE COINS</small></span>
+            <span><strong id="jigsawPrepBonus">+1–5</strong><small>TIME BONUS</small></span>
+          </div>
+          <p id="jigsawPrepBonusCopy">Finish within 5 minutes for +5 bonus coins. The bonus slides down to +1 coin at 15 minutes.</p>
+        </div>
+        <img id="jigsawPrepImage" class="prep-image" alt="Completed puzzle preview" />
+        <button id="startJigsawBtn" class="btn primary xl">Start Puzzle</button>
+      </main>
+    </section>
+
+    <section id="jigsawScreen" class="screen jigsaw-screen">
+      <header class="game-topbar">
+        <button id="exitJigsawBtn" class="icon-btn" aria-label="Exit Jigsaw">←</button>
+        <div class="game-title-wrap"><strong id="jigsawTitle">Classic Jigsaw</strong><small id="jigsawDifficultyText">Easy · 52 pieces</small></div>
+        <button id="jigsawPreviewBtn" class="icon-btn" aria-label="Preview completed artwork">👁</button>
+      </header>
+      <div class="game-stats jigsaw-stats">
+        <div><small>TIME</small><strong id="jigsawTimerText">00:00</strong></div>
+        <div><small>PLACED</small><strong id="jigsawPlacedText">0 / 52</strong></div>
+        <div><small>MOVES</small><strong id="jigsawMoveText">0</strong></div>
+      </div>
+      <div class="jigsaw-stage">
+        <canvas id="jigsawCanvas" tabindex="0" aria-label="Classic Jigsaw puzzle workspace"></canvas>
+      </div>
+      <div class="jigsaw-controls">
+        <button id="gatherJigsawBtn" class="btn subtle">↺ Gather Pieces</button>
+        <div class="camera-controls" aria-label="Workspace view controls">
+          <button id="jigsawZoomOutBtn" class="btn subtle" title="Zoom out" aria-label="Zoom out">−</button>
+          <button id="jigsawZoomInBtn" class="btn subtle" title="Zoom in" aria-label="Zoom in">+</button>
+          <button id="jigsawFitBtn" class="btn subtle" title="Fit assembly board">Fit</button>
+          <button id="jigsawFitAllBtn" class="btn subtle" title="Fit complete workspace" aria-label="Fit complete workspace">Fit All</button>
+          <button id="jigsawResetViewBtn" class="btn subtle" title="Reset workspace view">Reset</button>
+        </div>
+        <p class="jigsaw-tip">Drag a piece near its matching spot to snap it into place.</p>
+      </div>
+    </section>
   </div>
 
   <div id="modalBackdrop" class="modal-backdrop" hidden>
