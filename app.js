@@ -770,6 +770,7 @@ function showJigsawPreparation(puzzle) {
 }
 
 async function startJigsaw(resumeSave = null) {
+  resumeSave = validActiveJigsawSave(resumeSave) ? resumeSave : null;
   const puzzle = jigsawGame?.puzzle;
   const difficulty = jigsawGame?.difficulty || 'easy';
   if (!puzzle) return;
@@ -1994,7 +1995,7 @@ $('#jigsawPrepBackBtn').addEventListener('click', () => {
   puzzleFlow.step = 'difficulty';
   renderView();
 });
-$('#startJigsawBtn').addEventListener('click', startJigsaw);
+$('#startJigsawBtn').addEventListener('click', () => startJigsaw());
 $('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
 $('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePieces?.());
 $('#jigsawZoomOutBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1 / 1.25));
