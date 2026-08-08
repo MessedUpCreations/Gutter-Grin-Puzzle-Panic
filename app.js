@@ -217,9 +217,19 @@ function loadState() {
   }
 }
 
-function saveState() {
+function saveLocalState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   updateWallet();
+}
+
+function saveState() {
+  saveLocalState();
+
+  if (state.profile?.uid && state.profile.provider !== 'guest') {
+    savePlayerDataToCloud().catch((error) => {
+      console.error('Cloud save failed:', error);
+    });
+  }
 }
 
 function resetState() {
