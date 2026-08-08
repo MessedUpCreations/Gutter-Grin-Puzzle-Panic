@@ -747,6 +747,8 @@ class JigsawEngine {
   static PIECE_COUNT = 52;
   static WIDTH = 1400;
   static HEIGHT = 900;
+  static MIN_ZOOM = .4;
+  static MAX_ZOOM = 3;
 
   constructor(canvas, puzzle, image) {
     this.canvas = canvas;
@@ -765,10 +767,18 @@ class JigsawEngine {
     this.completed = false;
     this.previewing = false;
     this.framePending = false;
+    this.camera = { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2, zoom: 1 };
+    this.activePointers = new Map();
+    this.pan = null;
+    this.pinch = null;
+    this.spacePressed = false;
     this.resizeObserver = new ResizeObserver(() => { this.resizeCanvas(); this.requestRender(); });
     this.onPointerDown = (event) => this.pointerDown(event);
     this.onPointerMove = (event) => this.pointerMove(event);
     this.onPointerUp = (event) => this.pointerUp(event);
+    this.onWheel = (event) => this.wheel(event);
+    this.onKeyDown = (event) => { if (event.code === 'Space') { this.spacePressed = true; event.preventDefault(); } };
+    this.onKeyUp = (event) => { if (event.code === 'Space') this.spacePressed = false; };
   }
 
   start() {
@@ -994,6 +1004,9 @@ class JigsawEngine {
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerUp);
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.canvas.addEventListener('keydown', this.onKeyDown);
+    this.canvas.addEventListener('keyup', this.onKeyUp);
     this.resizeObserver.observe(this.canvas);
   }
 
@@ -1012,35 +1025,151 @@ class JigsawEngine {
     this.pixelRatio = ratio;
   }
 
-  canvasPoint(event) {
+  canvasScreenPoint(event) {
     const rect = this.canvas.getBoundingClientRect();
     return { x: (event.clientX - rect.left) / this.scaleX, y: (event.clientY - rect.top) / this.scaleY };
   }
 
+  worldToScreen(point) {
+    return {
+      x: (point.x - this.camera.x) * this.camera.zoom + JigsawEngine.WIDTH / 2,
+      y: (point.y - this.camera.y) * this.camera.zoom + JigsawEngine.HEIGHT / 2,
+    };
+  }
+
+  screenToWorld(point) {
+    return {
+      x: this.camera.x + (point.x - JigsawEngine.WIDTH / 2) / this.camera.zoom,
+      y: this.camera.y + (point.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom,
+    };
+  }
+
+  canvasPoint(event) {
+    return this.screenToWorld(this.canvasScreenPoint(event));
+  }
+
+  constrainCamera() {
+    const overscroll = 160;
+    const halfWidth = JigsawEngine.WIDTH / (2 * this.camera.zoom);
+    const halfHeight = JigsawEngine.HEIGHT / (2 * this.camera.zoom);
+    const minX = -overscroll + halfWidth, maxX = JigsawEngine.WIDTH + overscroll - halfWidth;
+    const minY = -overscroll + halfHeight, maxY = JigsawEngine.HEIGHT + overscroll - halfHeight;
+    this.camera.x = minX > maxX ? JigsawEngine.WIDTH / 2 : Math.max(minX, Math.min(maxX, this.camera.x));
+    this.camera.y = minY > maxY ? JigsawEngine.HEIGHT / 2 : Math.max(minY, Math.min(maxY, this.camera.y));
+  }
+
+  setZoomAtScreenPoint(zoom, screenPoint) {
+    const anchor = this.screenToWorld(screenPoint);
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, zoom));
+    this.camera.x = anchor.x - (screenPoint.x - JigsawEngine.WIDTH / 2) / this.camera.zoom;
+    this.camera.y = anchor.y - (screenPoint.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom;
+    this.constrainCamera();
+    this.requestRender();
+  }
+
+  zoomBy(factor) {
+    this.setZoomAtScreenPoint(this.camera.zoom * factor, { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2 });
+  }
+
+  wheel(event) {
+    event.preventDefault();
+    const screenPoint = this.canvasScreenPoint(event);
+    this.setZoomAtScreenPoint(this.camera.zoom * Math.exp(-event.deltaY * .0015), screenPoint);
+  }
+
+  fitBoard() {
+    const padding = 80;
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM,
+      Math.min((JigsawEngine.WIDTH - padding * 2) / this.board.width, (JigsawEngine.HEIGHT - padding * 2) / this.board.height)));
+    this.camera.x = this.board.x + this.board.width / 2;
+    this.camera.y = this.board.y + this.board.height / 2;
+    this.constrainCamera();
+    this.requestRender();
+  }
+
+  resetView() {
+    this.camera = { x: JigsawEngine.WIDTH / 2, y: JigsawEngine.HEIGHT / 2, zoom: 1 };
+    this.requestRender();
+  }
+
   pointerDown(event) {
     if (this.completed || this.previewing) return;
-    const point = this.canvasPoint(event);
+    this.canvas.focus({ preventScroll: true });
+    const screenPoint = this.canvasScreenPoint(event);
+    this.activePointers.set(event.pointerId, screenPoint);
+    this.canvas.setPointerCapture(event.pointerId);
+    if (this.activePointers.size >= 2) { this.beginPinch(); return; }
+    const point = this.screenToWorld(screenPoint);
+    const forcePan = event.button === 1 || this.spacePressed;
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    for (let index = this.drawOrder.length - 1; index >= 0; index -= 1) {
-      const piece = this.pieces[this.drawOrder[index]];
-      if (piece.placed) continue;
-      const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
-      if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
-        const groupId = piece.groupId;
-        const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
-        this.drag = { piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startX: point.x, startY: point.y, moved: false };
-        this.bringGroupToFront(groupId);
-        this.canvas.setPointerCapture(event.pointerId);
-        this.requestRender();
-        break;
+    if (!forcePan) {
+      for (let index = this.drawOrder.length - 1; index >= 0; index -= 1) {
+        const piece = this.pieces[this.drawOrder[index]];
+        if (piece.placed) continue;
+        const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+        if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
+          const groupId = piece.groupId;
+          const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
+          this.drag = { pointerId: event.pointerId, piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startScreen: screenPoint, moved: false };
+          this.bringGroupToFront(groupId);
+          this.canvas.style.cursor = 'grabbing';
+          this.requestRender();
+          return;
+        }
       }
     }
+    this.pan = { pointerId: event.pointerId, startScreen: screenPoint, startCamera: { x: this.camera.x, y: this.camera.y } };
+    this.canvas.style.cursor = 'grabbing';
   }
 
   pointerMove(event) {
-    if (!this.drag) return;
-    const point = this.updateDraggedPiece(event);
-    if (Math.hypot(point.x - this.drag.startX, point.y - this.drag.startY) > 6) this.drag.moved = true;
+    if (!this.activePointers.has(event.pointerId)) return;
+    const screenPoint = this.canvasScreenPoint(event);
+    this.activePointers.set(event.pointerId, screenPoint);
+    if (this.pinch) { this.updatePinch(); return; }
+    if (this.drag?.pointerId === event.pointerId) {
+      this.updateDraggedPiece(event);
+      if (Math.hypot(screenPoint.x - this.drag.startScreen.x, screenPoint.y - this.drag.startScreen.y) > 6) this.drag.moved = true;
+      this.requestRender();
+      return;
+    }
+    if (this.pan?.pointerId === event.pointerId) {
+      this.camera.x = this.pan.startCamera.x - (screenPoint.x - this.pan.startScreen.x) / this.camera.zoom;
+      this.camera.y = this.pan.startCamera.y - (screenPoint.y - this.pan.startScreen.y) / this.camera.zoom;
+      this.constrainCamera();
+      this.requestRender();
+    }
+  }
+
+  beginPinch() {
+    if (this.drag) {
+      this.groupMembers(this.drag.groupId).forEach((piece) => {
+        const start = this.drag.startPositions.get(piece.id);
+        piece.x = start.x; piece.y = start.y;
+      });
+      this.drag = null;
+    }
+    this.pan = null;
+    const points = [...this.activePointers.values()].slice(0, 2);
+    const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    this.pinch = {
+      startDistance: Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)),
+      startZoom: this.camera.zoom,
+      anchorWorld: this.screenToWorld(midpoint),
+    };
+    this.canvas.style.cursor = 'grabbing';
+    this.requestRender();
+  }
+
+  updatePinch() {
+    const points = [...this.activePointers.values()].slice(0, 2);
+    if (points.length < 2) return;
+    const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+    this.camera.zoom = Math.max(JigsawEngine.MIN_ZOOM, Math.min(JigsawEngine.MAX_ZOOM, this.pinch.startZoom * distance / this.pinch.startDistance));
+    this.camera.x = this.pinch.anchorWorld.x - (midpoint.x - JigsawEngine.WIDTH / 2) / this.camera.zoom;
+    this.camera.y = this.pinch.anchorWorld.y - (midpoint.y - JigsawEngine.HEIGHT / 2) / this.camera.zoom;
+    this.constrainCamera();
     this.requestRender();
   }
 
@@ -1128,11 +1257,36 @@ class JigsawEngine {
   }
 
   pointerUp(event) {
-    if (!this.drag) return;
+    if (!this.activePointers.has(event.pointerId)) return;
     const cancelled = event.type === 'pointercancel';
+    if (this.pinch) {
+      this.activePointers.delete(event.pointerId);
+      if (this.activePointers.size >= 2) {
+        this.beginPinch();
+      } else {
+        this.pinch = null;
+        const remaining = [...this.activePointers.entries()][0];
+        this.pan = remaining ? { pointerId: remaining[0], startScreen: remaining[1], startCamera: { x: this.camera.x, y: this.camera.y } } : null;
+      }
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      this.canvas.style.cursor = this.pan ? 'grabbing' : 'grab';
+      return;
+    }
+    if (this.pan?.pointerId === event.pointerId) {
+      this.pan = null;
+      this.activePointers.delete(event.pointerId);
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      this.canvas.style.cursor = 'grab';
+      return;
+    }
+    if (this.drag?.pointerId !== event.pointerId) {
+      this.activePointers.delete(event.pointerId);
+      return;
+    }
     if (!cancelled) {
       const releasePoint = this.updateDraggedPiece(event);
-      if (Math.hypot(releasePoint.x - this.drag.startX, releasePoint.y - this.drag.startY) > 6) this.drag.moved = true;
+      const releaseScreen = this.worldToScreen(releasePoint);
+      if (Math.hypot(releaseScreen.x - this.drag.startScreen.x, releaseScreen.y - this.drag.startScreen.y) > 6) this.drag.moved = true;
     }
     const { groupId, moved } = this.drag;
     if (moved) {
@@ -1144,7 +1298,9 @@ class JigsawEngine {
       }
     }
     if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+    this.activePointers.delete(event.pointerId);
     this.drag = null;
+    this.canvas.style.cursor = 'grab';
     this.requestRender();
     if (this.placed === JigsawEngine.PIECE_COUNT) finishJigsaw(this);
   }
@@ -1196,6 +1352,11 @@ class JigsawEngine {
     const ctx = this.ctx;
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
     ctx.clearRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.save();
+    ctx.translate(JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2);
+    ctx.scale(this.camera.zoom, this.camera.zoom);
+    ctx.translate(-this.camera.x, -this.camera.y);
     const surface = ctx.createRadialGradient(JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 80, JigsawEngine.WIDTH / 2, JigsawEngine.HEIGHT / 2, 760);
     surface.addColorStop(0, '#17171c'); surface.addColorStop(1, '#0e0e11');
     ctx.fillStyle = surface; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
@@ -1204,27 +1365,29 @@ class JigsawEngine {
     ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
     ctx.restore();
     ctx.fillStyle = '#17171c'; ctx.fillRect(this.board.x, this.board.y, this.board.width, this.board.height);
-    ctx.strokeStyle = '#62626e'; ctx.lineWidth = 3; ctx.setLineDash([10, 9]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
-    ctx.fillStyle = '#777782'; ctx.font = '800 13px system-ui'; ctx.textAlign = 'center';
+    ctx.strokeStyle = '#62626e'; ctx.lineWidth = 3 / this.camera.zoom; ctx.setLineDash([10 / this.camera.zoom, 9 / this.camera.zoom]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
+    ctx.fillStyle = '#777782'; ctx.font = `800 ${13 / this.camera.zoom}px system-ui`; ctx.textAlign = 'center';
     ctx.fillText('ASSEMBLY AREA', this.board.x + this.board.width / 2, this.board.y - 20);
     if (this.previewing || this.completed) {
       ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
-      ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2 / this.camera.zoom; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.restore();
       return;
     }
     this.drawOrder.forEach((id) => this.drawPiece(this.pieces[id]));
+    ctx.restore();
   }
 
   drawPiece(piece) {
     const ctx = this.ctx, dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
     ctx.save(); ctx.translate(dx, dy);
     ctx.save(); ctx.clip(piece.path);
-    ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = piece.placed ? 2 : 9; ctx.shadowOffsetY = piece.placed ? 0 : 4;
+    ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = (piece.placed ? 2 : 9) / this.camera.zoom; ctx.shadowOffsetY = (piece.placed ? 0 : 4) / this.camera.zoom;
     ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
     ctx.restore();
     const connecting = (piece.connectedPulseUntil || 0) > performance.now();
     ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : connecting ? '#b9ff36' : 'rgba(255,255,255,.72)';
-    ctx.lineWidth = connecting ? 4 : piece.placed ? 1.5 : 2.2; ctx.stroke(piece.path); ctx.restore();
+    ctx.lineWidth = (connecting ? 4 : piece.placed ? 1.5 : 2.2) / this.camera.zoom; ctx.stroke(piece.path); ctx.restore();
   }
 
   preview() {
@@ -1246,6 +1409,10 @@ class JigsawEngine {
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerUp);
+    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.canvas.removeEventListener('keydown', this.onKeyDown);
+    this.canvas.removeEventListener('keyup', this.onKeyUp);
+    this.activePointers.clear(); this.drag = null; this.pan = null; this.pinch = null;
   }
 }
 
@@ -1515,6 +1682,10 @@ $('#jigsawPrepBackBtn').addEventListener('click', () => {
 $('#startJigsawBtn').addEventListener('click', startJigsaw);
 $('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
 $('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePieces?.());
+$('#jigsawZoomOutBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1 / 1.25));
+$('#jigsawZoomInBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1.25));
+$('#jigsawFitBtn').addEventListener('click', () => jigsawGame?.fitBoard?.());
+$('#jigsawResetViewBtn').addEventListener('click', () => jigsawGame?.resetView?.());
 $('#exitJigsawBtn').addEventListener('click', () => {
   if (!jigsawGame || jigsawGame.completed) return returnFromJigsaw();
   showModal('Leave This Puzzle?', 'Your unfinished Jigsaw progress will be lost.', [

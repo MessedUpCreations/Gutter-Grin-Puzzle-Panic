@@ -109,10 +109,16 @@
         <div><small>MOVES</small><strong id="jigsawMoveText">0</strong></div>
       </div>
       <div class="jigsaw-stage">
-        <canvas id="jigsawCanvas" aria-label="Classic Jigsaw puzzle workspace"></canvas>
+        <canvas id="jigsawCanvas" tabindex="0" aria-label="Classic Jigsaw puzzle workspace"></canvas>
       </div>
       <div class="jigsaw-controls">
         <button id="gatherJigsawBtn" class="btn subtle">↺ Gather Pieces</button>
+        <div class="camera-controls" aria-label="Workspace view controls">
+          <button id="jigsawZoomOutBtn" class="btn subtle" title="Zoom out" aria-label="Zoom out">−</button>
+          <button id="jigsawZoomInBtn" class="btn subtle" title="Zoom in" aria-label="Zoom in">+</button>
+          <button id="jigsawFitBtn" class="btn subtle" title="Fit assembly board">Fit</button>
+          <button id="jigsawResetViewBtn" class="btn subtle" title="Reset workspace view">Reset</button>
+        </div>
         <p class="jigsaw-tip">Drag a piece near its matching spot to snap it into place.</p>
       </div>
     </section>
