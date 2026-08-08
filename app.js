@@ -96,6 +96,110 @@ async function syncPlayerProfileToCloud(user, providerName) {
     });
   }
 }
+function getCloudSavePayload() {
+  return {
+    version: 1,
+    coins: Number(state.coins || 0),
+    difficulty: state.difficulty || 'normal',
+    completed: state.completed || {},
+    purchasedPacks: Array.isArray(state.purchasedPacks)
+      ? state.purchasedPacks
+      : ['starter'],
+    totalMoves: Number(state.totalMoves || 0),
+    totalSeconds: Number(state.totalSeconds || 0),
+    puzzlesCompleted: Number(state.puzzlesCompleted || 0),
+  };
+}
+
+async function savePlayerDataToCloud() {
+  if (!state.profile?.uid || state.profile.provider === 'guest') {
+    return;
+  }
+
+  const { db, firestoreMod, auth } = await getFirebaseContext();
+
+  if (!auth.currentUser || auth.currentUser.uid !== state.profile.uid) {
+    return;
+  }
+
+  const saveRef = firestoreMod.doc(
+    db,
+    'users',
+    state.profile.uid,
+    'saves',
+    'main'
+  );
+
+  await firestoreMod.setDoc(
+    saveRef,
+    {
+      ...getCloudSavePayload(),
+      updatedAt: firestoreMod.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
+  const { db, firestoreMod } = await getFirebaseContext();
+
+  const saveRef = firestoreMod.doc(
+    db,
+    'users',
+    user.uid,
+    'saves',
+    'main'
+  );
+
+  const saveSnapshot = await firestoreMod.getDoc(saveRef);
+
+  const signedInProfile = {
+    provider: providerName,
+    name:
+      user.displayName ||
+      user.email ||
+      `${capitalize(providerName)} Player`,
+    uid: user.uid,
+  };
+
+  // Existing cloud save: cloud data wins.
+  if (saveSnapshot.exists()) {
+    const cloud = saveSnapshot.data();
+
+    state = {
+      ...structuredClone(defaultState),
+      profile: signedInProfile,
+      coins: cloud.coins ?? defaultState.coins,
+      difficulty: cloud.difficulty ?? defaultState.difficulty,
+      completed: cloud.completed || {},
+      purchasedPacks: Array.isArray(cloud.purchasedPacks)
+        ? cloud.purchasedPacks
+        : ['starter'],
+      totalMoves: cloud.totalMoves ?? 0,
+      totalSeconds: cloud.totalSeconds ?? 0,
+      puzzlesCompleted: cloud.puzzlesCompleted ?? 0,
+    };
+
+    saveLocalState();
+    return 'loaded';
+  }
+
+  // First login: preserve progress already earned as a guest.
+  state = {
+    ...structuredClone(defaultState),
+    ...localBeforeSignIn,
+    profile: signedInProfile,
+    completed: { ...(localBeforeSignIn.completed || {}) },
+    purchasedPacks: Array.isArray(localBeforeSignIn.purchasedPacks)
+      ? [...localBeforeSignIn.purchasedPacks]
+      : ['starter'],
+  };
+
+  saveLocalState();
+  await savePlayerDataToCloud();
+
+  return 'created';
+}
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
