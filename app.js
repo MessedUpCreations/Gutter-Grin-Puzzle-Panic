@@ -56,6 +56,7 @@ let timerHandle = null;
 let previewHandle = null;
 let firebaseContext = null;
 let puzzleFlow = { step: 'mode', puzzleId: null };
+let jigsawGame = null;
 
 async function getFirebaseContext() {
   const config = window.GG_FIREBASE_CONFIG;
@@ -226,6 +227,8 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const authScreen = $('#authScreen');
 const mainScreen = $('#mainScreen');
 const gameScreen = $('#gameScreen');
+const jigsawPrepScreen = $('#jigsawPrepScreen');
+const jigsawScreen = $('#jigsawScreen');
 const viewHost = $('#viewHost');
 
 function loadState() {
@@ -261,7 +264,7 @@ function resetState() {
 }
 
 function showScreen(screen) {
-  [authScreen, mainScreen, gameScreen].forEach((el) => el.classList.remove('active'));
+  [authScreen, mainScreen, gameScreen, jigsawPrepScreen, jigsawScreen].forEach((el) => el.classList.remove('active'));
   screen.classList.add('active');
 }
 
@@ -406,7 +409,8 @@ function renderDifficultySelection() {
   }));
   $('#playSelectedBtn').addEventListener('click', () => {
     if (state.selectedMode === 'jigsaw') {
-      showModal('Classic Jigsaw Is Coming Next', 'Your artwork and difficulty are locked in. The interlocking jigsaw engine is currently in development and will arrive in the next stage.', [{ label: 'Back to Difficulties', primary: true }], '🧩');
+      if (state.difficulty === 'easy') return showJigsawPreparation(puzzle);
+      showModal('Higher Piece Counts Coming Next', `${difficulties[state.difficulty].pieces.toLocaleString()}-piece Classic Jigsaw support is being enabled in the next engine stage. Easy · 52 pieces is playable now.`, [{ label: 'Back to Difficulties', primary: true }], '🧩');
       return;
     }
     startGame(puzzle);
@@ -660,6 +664,337 @@ function reshuffle() {
   game.moves += 1;
   $('#moveText').textContent = String(game.moves);
   renderBoard();
+}
+
+function showJigsawPreparation(puzzle) {
+  clearInterval(timerHandle);
+  jigsawGame = { puzzle, started: false };
+  $('#jigsawPrepTitle').textContent = puzzle.title;
+  $('#jigsawPrepImage').src = puzzle.image;
+  $('#jigsawPrepImage').alt = `${puzzle.title} completed artwork`;
+  $('#prepCoinCount').textContent = Number(state.coins || 0).toLocaleString();
+  showScreen(jigsawPrepScreen);
+}
+
+async function startJigsaw() {
+  const puzzle = jigsawGame?.puzzle;
+  if (!puzzle) return;
+  const image = new Image();
+  image.src = puzzle.image;
+  try { await image.decode(); } catch { /* The load event fallback below still validates dimensions. */ }
+  if (!image.complete || !image.naturalWidth) {
+    return showModal('Artwork Could Not Load', 'Please check your connection and try starting this puzzle again.', [{ label: 'Back', primary: true }], '!');
+  }
+  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image);
+  $('#jigsawTitle').textContent = puzzle.title;
+  $('#jigsawTimerText').textContent = '00:00';
+  $('#jigsawPlacedText').textContent = '0 / 52';
+  $('#jigsawMoveText').textContent = '0';
+  showScreen(jigsawScreen);
+  jigsawGame.start();
+}
+
+function jigsawTimeBonus(seconds) {
+  if (seconds <= 300) return 5;
+  if (seconds > 900) return 0;
+  return Math.max(1, Math.min(5, Math.ceil(1 + (4 * (900 - seconds)) / 600)));
+}
+
+function finishJigsaw(engine) {
+  if (jigsawGame !== engine || engine.completed) return;
+  engine.completed = true;
+  engine.stopTimer();
+  engine.renderCompleted();
+  const seconds = engine.seconds;
+  const baseReward = JIGSAW_DIFFICULTIES.easy.reward;
+  const timeBonus = jigsawTimeBonus(seconds);
+  const reward = baseReward + timeBonus;
+  const key = completionKey('jigsaw', engine.puzzle.id, 'easy');
+  const prior = state.completed[key];
+  state.completed[key] = {
+    bestSeconds: Number.isFinite(prior?.bestSeconds) ? Math.min(prior.bestSeconds, seconds) : seconds,
+    bestMoves: Number.isFinite(prior?.bestMoves) ? Math.min(prior.bestMoves, engine.moves) : engine.moves,
+    clears: (prior?.clears || 0) + 1,
+  };
+  state.coins += reward;
+  state.totalMoves = (state.totalMoves || 0) + engine.moves;
+  state.totalSeconds = (state.totalSeconds || 0) + seconds;
+  state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  saveState();
+  setTimeout(() => showModal(
+    'Jigsaw Complete!',
+    `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
+    [
+      { label: 'Back to Puzzles', action: returnFromJigsaw },
+      { label: 'Play Again', primary: true, action: () => showJigsawPreparation(engine.puzzle) },
+    ],
+    '✓'
+  ), 350);
+}
+
+function returnFromJigsaw() {
+  jigsawGame?.destroy?.();
+  jigsawGame = null;
+  showScreen(mainScreen);
+  puzzleFlow = { step: 'puzzle', puzzleId: null };
+  currentView = 'puzzles';
+  renderView();
+}
+
+class JigsawEngine {
+  static COLS = 7;
+  static ROWS = 8;
+  static PIECE_COUNT = 52;
+  static WIDTH = 1200;
+  static HEIGHT = 800;
+
+  constructor(canvas, puzzle, image) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.puzzle = puzzle;
+    this.image = image;
+    this.pieces = [];
+    this.drawOrder = [];
+    this.drag = null;
+    this.moves = 0;
+    this.placed = 0;
+    this.seconds = 0;
+    this.startedAt = 0;
+    this.completed = false;
+    this.previewing = false;
+    this.framePending = false;
+    this.resizeObserver = new ResizeObserver(() => { this.resizeCanvas(); this.requestRender(); });
+    this.onPointerDown = (event) => this.pointerDown(event);
+    this.onPointerMove = (event) => this.pointerMove(event);
+    this.onPointerUp = (event) => this.pointerUp(event);
+  }
+
+  start() {
+    this.configureBoard();
+    this.createPieces();
+    this.scatterPieces();
+    this.bindEvents();
+    this.resizeCanvas();
+    this.startedAt = Date.now();
+    this.timer = setInterval(() => {
+      if (this.completed) return;
+      this.seconds = Math.floor((Date.now() - this.startedAt) / 1000);
+      $('#jigsawTimerText').textContent = formatTime(this.seconds);
+    }, 250);
+    this.requestRender();
+  }
+
+  configureBoard() {
+    const aspect = this.puzzle.width / this.puzzle.height;
+    let width = 780;
+    let height = width / aspect;
+    if (height > 650) { height = 650; width = height * aspect; }
+    this.board = { x: (JigsawEngine.WIDTH - width) / 2, y: (JigsawEngine.HEIGHT - height) / 2, width, height };
+    this.pieceWidth = width / JigsawEngine.COLS;
+    this.pieceHeight = height / JigsawEngine.ROWS;
+    this.snapTolerance = Math.min(this.pieceWidth, this.pieceHeight) * 0.42;
+  }
+
+  createPieces() {
+    // A 7×8 atomic grid covers the full artwork. Pairing two cells at each
+    // top/bottom corner removes four logical pieces: 56 - 4 = exactly 52.
+    const vertical = Array.from({ length: JigsawEngine.ROWS }, () =>
+      Array.from({ length: JigsawEngine.COLS - 1 }, () => Math.random() < .5 ? -1 : 1));
+    const horizontal = Array.from({ length: JigsawEngine.ROWS - 1 }, () =>
+      Array.from({ length: JigsawEngine.COLS }, () => Math.random() < .5 ? -1 : 1));
+    const topEdge = (row, col) => row === 0 ? 0 : -horizontal[row - 1][col];
+    const rightEdge = (row, col) => col === JigsawEngine.COLS - 1 ? 0 : vertical[row][col];
+    const bottomEdge = (row, col) => row === JigsawEngine.ROWS - 1 ? 0 : horizontal[row][col];
+    const leftEdge = (row, col) => col === 0 ? 0 : -vertical[row][col - 1];
+    let id = 0;
+    for (let row = 0; row < JigsawEngine.ROWS; row += 1) {
+      for (let col = 0; col < JigsawEngine.COLS; col += 1) {
+        const isPairedEdgePiece = (row === 0 || row === JigsawEngine.ROWS - 1) && (col === 0 || col === 5);
+        const cellSpan = isPairedEdgePiece ? 2 : 1;
+        const targetX = this.board.x + col * this.pieceWidth;
+        const targetY = this.board.y + row * this.pieceHeight;
+        const edges = {
+          top: Array.from({ length: cellSpan }, (_, offset) => topEdge(row, col + offset)),
+          right: rightEdge(row, col + cellSpan - 1),
+          bottom: Array.from({ length: cellSpan }, (_, offset) => bottomEdge(row, col + offset)),
+          left: leftEdge(row, col),
+        };
+        const piece = { id, row, col, cellSpan, targetX, targetY, x: 0, y: 0, edges, placed: false, groupId: id };
+        piece.path = this.makePiecePath(piece);
+        this.pieces.push(piece);
+        id += 1;
+        if (isPairedEdgePiece) col += 1;
+      }
+    }
+    if (this.pieces.length !== JigsawEngine.PIECE_COUNT) throw new Error('Easy Jigsaw must contain exactly 52 pieces.');
+  }
+
+  makePiecePath(piece) {
+    const path = new Path2D();
+    const x = piece.targetX, y = piece.targetY, w = this.pieceWidth, h = this.pieceHeight;
+    const depth = Math.min(w, h) * (0.17 + ((piece.id % 3) * 0.018));
+    path.moveTo(x, y);
+    for (let offset = 0; offset < piece.cellSpan; offset += 1) this.addEdge(path, x + offset * w, y, x + (offset + 1) * w, y, 0, -1, piece.edges.top[offset], depth);
+    this.addEdge(path, x + piece.cellSpan * w, y, x + piece.cellSpan * w, y + h, 1, 0, piece.edges.right, depth);
+    for (let offset = piece.cellSpan - 1; offset >= 0; offset -= 1) this.addEdge(path, x + (offset + 1) * w, y + h, x + offset * w, y + h, 0, 1, piece.edges.bottom[offset], depth);
+    this.addEdge(path, x, y + h, x, y, -1, 0, piece.edges.left, depth);
+    path.closePath();
+    return path;
+  }
+
+  addEdge(path, x1, y1, x2, y2, nx, ny, edge, depth) {
+    if (!edge) { path.lineTo(x2, y2); return; }
+    const dx = x2 - x1, dy = y2 - y1, bump = depth * edge;
+    const point = (t, normal = 0) => [x1 + dx * t + nx * normal, y1 + dy * t + ny * normal];
+    path.lineTo(...point(.34));
+    path.bezierCurveTo(...point(.38), ...point(.37, bump), ...point(.46, bump));
+    path.bezierCurveTo(...point(.54, bump), ...point(.62, bump), ...point(.66));
+    path.lineTo(x2, y2);
+  }
+
+  scatterPieces() {
+    const slots = [];
+    const slotW = JigsawEngine.WIDTH / JigsawEngine.COLS;
+    const slotH = JigsawEngine.HEIGHT / JigsawEngine.ROWS;
+    for (let row = 0; row < JigsawEngine.ROWS; row += 1) for (let col = 0; col < JigsawEngine.COLS; col += 1) {
+      slots.push({ x: col * slotW + (slotW - this.pieceWidth) / 2, y: row * slotH + (slotH - this.pieceHeight) / 2 });
+    }
+    shuffle(slots);
+    this.pieces.forEach((piece, index) => {
+      const slot = slots[index];
+      const visualWidth = this.pieceWidth * piece.cellSpan;
+      piece.x = Math.min(JigsawEngine.WIDTH - visualWidth, slot.x + (Math.random() - .5) * Math.max(4, slotW - visualWidth) * .5);
+      piece.y = slot.y + (Math.random() - .5) * Math.max(4, slotH - this.pieceHeight) * .5;
+      if (Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY) <= this.snapTolerance) piece.x = (piece.x + slotW * 2) % (JigsawEngine.WIDTH - this.pieceWidth);
+    });
+    this.drawOrder = shuffle(this.pieces.map((piece) => piece.id));
+  }
+
+  bindEvents() {
+    this.canvas.addEventListener('pointerdown', this.onPointerDown);
+    this.canvas.addEventListener('pointermove', this.onPointerMove);
+    this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerUp);
+    this.resizeObserver.observe(this.canvas);
+  }
+
+  resizeCanvas() {
+    const rect = this.canvas.getBoundingClientRect();
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const cssAspect = JigsawEngine.WIDTH / JigsawEngine.HEIGHT;
+    let width = rect.width, height = width / cssAspect;
+    if (height > rect.height) { height = rect.height; width = height * cssAspect; }
+    this.canvas.style.width = `${Math.floor(width)}px`;
+    this.canvas.style.height = `${Math.floor(height)}px`;
+    this.canvas.width = Math.max(1, Math.floor(width * ratio));
+    this.canvas.height = Math.max(1, Math.floor(height * ratio));
+    this.scaleX = width / JigsawEngine.WIDTH;
+    this.scaleY = height / JigsawEngine.HEIGHT;
+    this.pixelRatio = ratio;
+  }
+
+  canvasPoint(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / this.scaleX, y: (event.clientY - rect.top) / this.scaleY };
+  }
+
+  pointerDown(event) {
+    if (this.completed || this.previewing) return;
+    const point = this.canvasPoint(event);
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    for (let index = this.drawOrder.length - 1; index >= 0; index -= 1) {
+      const piece = this.pieces[this.drawOrder[index]];
+      if (piece.placed) continue;
+      const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+      if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
+        this.drag = { piece, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startX: point.x, startY: point.y, moved: false };
+        this.drawOrder.splice(index, 1); this.drawOrder.push(piece.id);
+        this.canvas.setPointerCapture(event.pointerId);
+        this.requestRender();
+        break;
+      }
+    }
+  }
+
+  pointerMove(event) {
+    if (!this.drag) return;
+    const point = this.canvasPoint(event);
+    this.drag.piece.x = point.x - this.drag.offsetX;
+    this.drag.piece.y = point.y - this.drag.offsetY;
+    if (Math.hypot(point.x - this.drag.startX, point.y - this.drag.startY) > 6) this.drag.moved = true;
+    this.requestRender();
+  }
+
+  pointerUp(event) {
+    if (!this.drag) return;
+    const { piece, moved } = this.drag;
+    if (moved) {
+      this.moves += 1;
+      $('#jigsawMoveText').textContent = String(this.moves);
+      if (Math.hypot(piece.x - piece.targetX, piece.y - piece.targetY) <= this.snapTolerance) {
+        piece.x = piece.targetX; piece.y = piece.targetY; piece.placed = true;
+        this.placed += 1;
+        $('#jigsawPlacedText').textContent = `${this.placed} / ${JigsawEngine.PIECE_COUNT}`;
+      }
+    }
+    if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+    this.drag = null;
+    this.requestRender();
+    if (this.placed === JigsawEngine.PIECE_COUNT) finishJigsaw(this);
+  }
+
+  requestRender() {
+    if (this.framePending) return;
+    this.framePending = true;
+    requestAnimationFrame(() => { this.framePending = false; this.render(); });
+  }
+
+  render() {
+    const ctx = this.ctx;
+    ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
+    ctx.clearRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.fillStyle = '#121216'; ctx.fillRect(0, 0, JigsawEngine.WIDTH, JigsawEngine.HEIGHT);
+    ctx.fillStyle = '#1b1b20'; ctx.fillRect(this.board.x, this.board.y, this.board.width, this.board.height);
+    ctx.strokeStyle = '#555560'; ctx.lineWidth = 3; ctx.setLineDash([10, 9]); ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height); ctx.setLineDash([]);
+    if (this.previewing || this.completed) {
+      ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
+      return;
+    }
+    this.drawOrder.forEach((id) => this.drawPiece(this.pieces[id]));
+  }
+
+  drawPiece(piece) {
+    const ctx = this.ctx, dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+    ctx.save(); ctx.translate(dx, dy);
+    ctx.save(); ctx.clip(piece.path);
+    ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = piece.placed ? 2 : 9; ctx.shadowOffsetY = piece.placed ? 0 : 4;
+    ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
+    ctx.restore();
+    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : 'rgba(255,255,255,.72)';
+    ctx.lineWidth = piece.placed ? 1.5 : 2.2; ctx.stroke(piece.path); ctx.restore();
+  }
+
+  preview() {
+    if (this.completed || this.previewing) return;
+    this.previewing = true; jigsawScreen.classList.add('previewing'); this.requestRender();
+    clearTimeout(this.previewTimer);
+    this.previewTimer = setTimeout(() => { this.previewing = false; jigsawScreen.classList.remove('previewing'); this.requestRender(); }, 1800);
+  }
+
+  renderCompleted() { this.requestRender(); }
+  stopTimer() {
+    clearInterval(this.timer);
+    this.seconds = Math.max(1, Math.floor((Date.now() - this.startedAt) / 1000));
+    $('#jigsawTimerText').textContent = formatTime(this.seconds);
+  }
+  destroy() {
+    clearInterval(this.timer); clearTimeout(this.previewTimer); this.resizeObserver.disconnect();
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown);
+    this.canvas.removeEventListener('pointermove', this.onPointerMove);
+    this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerUp);
+  }
 }
 
 async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
@@ -918,9 +1253,26 @@ $('#exitGameBtn').addEventListener('click', () => {
 });
 $('#previewBtn').addEventListener('click', previewPuzzle);
 $('#reshuffleBtn').addEventListener('click', reshuffle);
+$('#jigsawPrepBackBtn').addEventListener('click', () => {
+  jigsawGame = null;
+  showScreen(mainScreen);
+  currentView = 'puzzles';
+  puzzleFlow.step = 'difficulty';
+  renderView();
+});
+$('#startJigsawBtn').addEventListener('click', startJigsaw);
+$('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
+$('#exitJigsawBtn').addEventListener('click', () => {
+  if (!jigsawGame || jigsawGame.completed) return returnFromJigsaw();
+  showModal('Leave This Puzzle?', 'Your unfinished Jigsaw progress will be lost.', [
+    { label: 'Keep Playing' },
+    { label: 'Leave Puzzle', primary: true, action: returnFromJigsaw },
+  ], '↩');
+});
 
 window.addEventListener('keydown', (e) => {
   if (gameScreen.classList.contains('active') && e.key === 'Escape') $('#exitGameBtn').click();
+  if (jigsawScreen.classList.contains('active') && e.key === 'Escape') $('#exitJigsawBtn').click();
 });
 window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); });
 
