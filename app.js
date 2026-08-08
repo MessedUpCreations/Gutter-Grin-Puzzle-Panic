@@ -573,6 +573,53 @@ function reshuffle() {
   renderBoard();
 }
 
+async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
+  state.profile = {
+    provider: providerName,
+    name:
+      user.displayName ||
+      user.email ||
+      `${capitalize(providerName)} Player`,
+    uid: user.uid,
+  };
+
+  // Save locally only until we've checked for an existing cloud save.
+  saveLocalState();
+
+  let cloudStatus = 'unavailable';
+
+  try {
+    await syncPlayerProfileToCloud(user, providerName);
+
+    cloudStatus = await loadOrCreatePlayerSave(
+      user,
+      providerName,
+      localBeforeSignIn
+    );
+  } catch (cloudError) {
+    console.error('Firestore sync failed:', cloudError);
+  }
+
+  enterApp();
+  return cloudStatus;
+}
+
+function showCloudSignInToast(providerName, cloudStatus) {
+  if (cloudStatus === 'loaded') {
+    showToast(
+      `Signed in with ${capitalize(providerName)} · Cloud save loaded`
+    );
+  } else if (cloudStatus === 'created') {
+    showToast(
+      `Signed in with ${capitalize(providerName)} · Progress saved to cloud`
+    );
+  } else {
+    showToast(
+      `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
+    );
+  }
+}
+
 async function signInWithProvider(providerName) {
   const config = window.GG_FIREBASE_CONFIG;
 
@@ -594,11 +641,14 @@ async function signInWithProvider(providerName) {
     );
   }
 
-  try {
-    // Preserve the progress already stored on this device.
-    const localBeforeSignIn = structuredClone(state);
+  // Preserve progress already stored on this device.
+  const localBeforeSignIn = structuredClone(state);
 
-    const { auth, authMod } = await getFirebaseContext();
+  let auth;
+  let authMod;
+
+  try {
+    ({ auth, authMod } = await getFirebaseContext());
 
     const provider =
       providerName === 'google'
@@ -607,49 +657,100 @@ async function signInWithProvider(providerName) {
 
     const result = await authMod.signInWithPopup(auth, provider);
 
-    state.profile = {
-      provider: providerName,
-      name:
-        result.user.displayName ||
-        result.user.email ||
-        `${capitalize(providerName)} Player`,
-      uid: result.user.uid,
-    };
+    const cloudStatus = await completeProviderSignIn(
+      result.user,
+      providerName,
+      localBeforeSignIn
+    );
 
-    // Save locally only until we've checked for an existing cloud save.
-    saveLocalState();
-
-    let cloudStatus = 'unavailable';
-
-    try {
-      await syncPlayerProfileToCloud(result.user, providerName);
-
-      cloudStatus = await loadOrCreatePlayerSave(
-        result.user,
-        providerName,
-        localBeforeSignIn
-      );
-    } catch (cloudError) {
-      console.error('Firestore sync failed:', cloudError);
-    }
-
-    enterApp();
-
-    if (cloudStatus === 'loaded') {
-      showToast(
-        `Signed in with ${capitalize(providerName)} · Cloud save loaded`
-      );
-    } else if (cloudStatus === 'created') {
-      showToast(
-        `Signed in with ${capitalize(providerName)} · Progress saved to cloud`
-      );
-    } else {
-      showToast(
-        `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
-      );
-    }
+    showCloudSignInToast(providerName, cloudStatus);
   } catch (err) {
     console.error(err);
+
+    if (
+      err?.code === 'auth/account-exists-with-different-credential' &&
+      auth &&
+      authMod
+    ) {
+      const pendingCredential =
+        providerName === 'facebook'
+          ? authMod.FacebookAuthProvider.credentialFromError(err)
+          : authMod.GoogleAuthProvider.credentialFromError(err);
+
+      const existingProviderName =
+        providerName === 'facebook' ? 'google' : 'facebook';
+
+      const conflictEmail = err?.customData?.email || null;
+
+      if (pendingCredential) {
+        return showModal(
+          'Link Your Accounts',
+          `This email already has a ${capitalize(existingProviderName)} Puzzle Panic account. Sign in with ${capitalize(existingProviderName)} once to link both login methods and keep the same cloud save.`,
+          [
+            { label: 'Cancel' },
+            {
+              label: `Link with ${capitalize(existingProviderName)}`,
+              primary: true,
+              action: () => {
+                const existingProvider =
+                  existingProviderName === 'google'
+                    ? new authMod.GoogleAuthProvider()
+                    : new authMod.FacebookAuthProvider();
+
+                authMod
+                  .signInWithPopup(auth, existingProvider)
+                  .then(async (existingResult) => {
+                    // Prevent accidentally linking to the wrong Google/Facebook account.
+                    if (
+                      conflictEmail &&
+                      existingResult.user.email &&
+                      existingResult.user.email.toLowerCase() !==
+                        conflictEmail.toLowerCase()
+                    ) {
+                      await authMod.signOut(auth);
+
+                      throw new Error(
+                        `Please sign in with the ${capitalize(existingProviderName)} account that uses the same email address as your existing Puzzle Panic account.`
+                      );
+                    }
+
+                    const linkedResult = await authMod.linkWithCredential(
+                      existingResult.user,
+                      pendingCredential
+                    );
+
+                    const cloudStatus = await completeProviderSignIn(
+                      linkedResult.user,
+                      providerName,
+                      localBeforeSignIn
+                    );
+
+                    showToast(
+                      `Google + Facebook linked · ${
+                        cloudStatus === 'loaded'
+                          ? 'Cloud save loaded'
+                          : 'Account connected'
+                      }`
+                    );
+                  })
+                  .catch((linkError) => {
+                    console.error('Account linking failed:', linkError);
+
+                    showModal(
+                      'Account Linking Failed',
+                      linkError?.message ||
+                        'The accounts could not be linked. Please try again.',
+                      [{ label: 'Try Again', primary: true }],
+                      '!'
+                    );
+                  });
+              },
+            },
+          ],
+          '🔗'
+        );
+      }
+    }
 
     showModal(
       'Sign-in Failed',
