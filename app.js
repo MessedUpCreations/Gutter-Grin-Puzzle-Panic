@@ -697,7 +697,7 @@ async function signInWithProvider(providerName) {
         ? `Signed in with ${capitalize(providerName)} · Cloud connected`
         : `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
     );
-  } catch (err) {
+   } catch (err) {
     console.error(err);
 
     showModal(
