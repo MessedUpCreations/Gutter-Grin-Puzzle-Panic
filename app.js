@@ -815,8 +815,10 @@ class JigsawEngine {
           right: col === count - 1 ? 0 : vertical[row][col],
           left: col === 0 ? 0 : -vertical[row][col - 1],
         };
-        const piece = { id, row, col, targetX, targetY, width, x: 0, y: 0, edges, placed: false, groupId: id };
+        const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * 0.018));
+        const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id };
         piece.path = this.makePiecePath(piece);
+        piece.visualBounds = this.calculateVisualBounds(piece);
         this.pieces.push(piece);
         id += 1;
       }
@@ -827,7 +829,7 @@ class JigsawEngine {
   makePiecePath(piece) {
     const path = new Path2D();
     const x = piece.targetX, w = piece.width, h = this.pieceHeight;
-    const depth = Math.min(w, h) * (0.17 + ((piece.id % 3) * 0.018));
+    const depth = piece.tabDepth;
     path.moveTo(x, this.horizontalBoundaryY(piece.row - 1, x));
     this.addHorizontalBoundary(path, piece.row - 1, x, x + w);
     this.addEdge(path, x + w, this.horizontalBoundaryY(piece.row - 1, x + w), x + w, this.horizontalBoundaryY(piece.row, x + w), 1, 0, piece.edges.right, depth);
@@ -835,6 +837,35 @@ class JigsawEngine {
     this.addEdge(path, x, this.horizontalBoundaryY(piece.row, x), x, this.horizontalBoundaryY(piece.row - 1, x), -1, 0, piece.edges.left, depth);
     path.closePath();
     return path;
+  }
+
+  calculateVisualBounds(piece) {
+    let minY = piece.targetY;
+    let maxY = piece.targetY + this.pieceHeight;
+    const segmentWidth = this.board.width / 7;
+    const sampleXs = [piece.targetX, piece.targetX + piece.width];
+    for (let segment = 0; segment < 7; segment += 1) {
+      const peakX = this.board.x + (segment + .5) * segmentWidth;
+      if (peakX > piece.targetX && peakX < piece.targetX + piece.width) sampleXs.push(peakX);
+    }
+    sampleXs.forEach((x) => {
+      minY = Math.min(minY, this.horizontalBoundaryY(piece.row - 1, x), this.horizontalBoundaryY(piece.row, x));
+      maxY = Math.max(maxY, this.horizontalBoundaryY(piece.row - 1, x), this.horizontalBoundaryY(piece.row, x));
+    });
+    return {
+      minX: piece.edges.left === 1 ? -piece.tabDepth : 0,
+      maxX: piece.width + (piece.edges.right === 1 ? piece.tabDepth : 0),
+      minY: minY - piece.targetY,
+      maxY: maxY - piece.targetY,
+    };
+  }
+
+  clampPiecePosition(piece, x, y, margin = 8) {
+    const bounds = piece.visualBounds;
+    return {
+      x: Math.max(margin - bounds.minX, Math.min(JigsawEngine.WIDTH - margin - bounds.maxX, x)),
+      y: Math.max(margin - bounds.minY, Math.min(JigsawEngine.HEIGHT - margin - bounds.maxY, y)),
+    };
   }
 
   horizontalBoundaryY(boundary, x) {
@@ -868,7 +899,7 @@ class JigsawEngine {
     path.lineTo(x2, y2);
   }
 
-  scatterPieces() {
+  scatterPieces(pieces = this.pieces) {
     const margin = 24;
     const gap = 24;
     const zones = [
@@ -878,7 +909,7 @@ class JigsawEngine {
       { x: this.board.x, y: this.board.y + this.board.height + gap, width: this.board.width, height: JigsawEngine.HEIGHT - (this.board.y + this.board.height + gap) - margin },
     ].filter((zone) => zone.width > 50 && zone.height > 50);
     const centers = [];
-    shuffle(this.pieces.slice()).forEach((piece, index) => {
+    shuffle(pieces.slice()).forEach((piece, index) => {
       let candidate = null;
       for (let attempt = 0; attempt < 70; attempt += 1) {
         const zone = zones[(index + Math.floor(Math.random() * zones.length)) % zones.length];
@@ -890,11 +921,14 @@ class JigsawEngine {
         candidate = { x, y, center };
         if (centers.every((prior) => Math.hypot(center.x - prior.x, center.y - prior.y) > Math.min(piece.width, this.pieceHeight) * .48)) break;
       }
-      piece.x = Math.max(margin, Math.min(JigsawEngine.WIDTH - piece.width - margin, candidate.x));
-      piece.y = Math.max(margin, Math.min(JigsawEngine.HEIGHT - this.pieceHeight - margin, candidate.y));
+      const position = this.clampPiecePosition(piece, candidate.x, candidate.y, margin);
+      piece.x = position.x;
+      piece.y = position.y;
       centers.push(candidate.center);
     });
-    this.drawOrder = shuffle(this.pieces.map((piece) => piece.id));
+    if (pieces.length === this.pieces.length) {
+      this.drawOrder = shuffle(this.pieces.map((piece) => piece.id));
+    }
   }
 
   bindEvents() {
@@ -946,8 +980,9 @@ class JigsawEngine {
   pointerMove(event) {
     if (!this.drag) return;
     const point = this.canvasPoint(event);
-    this.drag.piece.x = point.x - this.drag.offsetX;
-    this.drag.piece.y = point.y - this.drag.offsetY;
+    const position = this.clampPiecePosition(this.drag.piece, point.x - this.drag.offsetX, point.y - this.drag.offsetY);
+    this.drag.piece.x = position.x;
+    this.drag.piece.y = position.y;
     if (Math.hypot(point.x - this.drag.startX, point.y - this.drag.startY) > 6) this.drag.moved = true;
     this.requestRender();
   }
@@ -968,6 +1003,20 @@ class JigsawEngine {
     this.drag = null;
     this.requestRender();
     if (this.placed === JigsawEngine.PIECE_COUNT) finishJigsaw(this);
+  }
+
+  gatherLoosePieces() {
+    if (this.completed || this.previewing) return;
+    const loosePieces = this.pieces.filter((piece) => !piece.placed);
+    if (!loosePieces.length) return;
+    this.scatterPieces(loosePieces);
+    const looseIds = new Set(loosePieces.map((piece) => piece.id));
+    this.drawOrder = [
+      ...this.drawOrder.filter((id) => !looseIds.has(id)),
+      ...shuffle(loosePieces.map((piece) => piece.id)),
+    ];
+    this.requestRender();
+    showToast('Loose pieces gathered');
   }
 
   requestRender() {
@@ -1297,6 +1346,7 @@ $('#jigsawPrepBackBtn').addEventListener('click', () => {
 });
 $('#startJigsawBtn').addEventListener('click', startJigsaw);
 $('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
+$('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePieces?.());
 $('#exitJigsawBtn').addEventListener('click', () => {
   if (!jigsawGame || jigsawGame.completed) return returnFromJigsaw();
   showModal('Leave This Puzzle?', 'Your unfinished Jigsaw progress will be lost.', [
