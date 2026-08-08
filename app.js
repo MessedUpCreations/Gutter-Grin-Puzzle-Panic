@@ -8,22 +8,39 @@ const PUZZLES = [
 
 const PACKS = [
   { id: 'starter', title: 'Gutter Grin Starter Pack', count: 5, price: 0, owned: true, available: true, image: 'assets/gutter-grin.webp', description: 'The five launch puzzles included with the game.' },
-  { id: 'trash-panda', title: 'Trash Panda Trouble', count: 6, price: 500, owned: false, available: false, description: 'Future raccoon chaos pack. Pack slot and shop logic are ready.' },
-  { id: 'after-hours', title: 'After Hours', count: 8, price: 750, owned: false, available: false, description: 'A future adults-only humor puzzle pack.' },
-  { id: 'hot-mess', title: 'Hot Mess Express', count: 10, price: 1000, owned: false, available: false, description: 'A larger future pack for the truly committed mess.' },
+  { id: 'raccoon-adventures', title: 'Raccoon Adventures', count: 5, price: 500, owned: false, available: false, description: 'More trash-panda trouble is on the way.' },
+  { id: 'wild-groovy', title: "Wild n' Groovy", count: 5, price: 500, owned: false, available: false, description: 'A future pack of wild, groovy artwork.' },
+  { id: 'epic-fantasy', title: 'Epic Fantasy', count: 5, price: 500, owned: false, available: false, description: 'A future collection of fantastic adventures.' },
 ];
 
-const DIFFICULTIES = {
+const SWAP_DIFFICULTIES = {
   easy:   { label: 'Easy', cols: 3, rows: 3, reward: 10 },
   normal: { label: 'Normal', cols: 4, rows: 4, reward: 20 },
   hard:   { label: 'Hard', cols: 5, rows: 5, reward: 35 },
   insane: { label: 'Insane', cols: 6, rows: 6, reward: 60 },
 };
 
+// Timing values are in seconds so Stage 9B can calculate time bonuses directly.
+const JIGSAW_DIFFICULTIES = {
+  easy: { label: 'Easy', pieces: 52, reward: 2, timeBonus: { type: 'sliding', fastestSeconds: 300, slowestSeconds: 900, minCoins: 1, maxCoins: 5 } },
+  normal: { label: 'Normal', pieces: 252, reward: 5, timeBonus: { type: 'sliding', fastestSeconds: 900, slowestSeconds: 1800, minCoins: 5, maxCoins: 10 } },
+  hard: { label: 'Hard', pieces: 500, reward: 10, timeBonus: { type: 'sliding', fastestSeconds: 2700, slowestSeconds: 3600, minCoins: 10, maxCoins: 20 } },
+  insane: { label: 'Insane', pieces: 1000, reward: 20, timeBonus: { type: 'tiers', tiers: [
+    { maxSeconds: 3600, coins: 40 }, { maxSeconds: 7200, coins: 30 },
+    { maxSeconds: 10800, coins: 20 }, { maxSeconds: null, coins: 0 },
+  ] } },
+};
+
+const GAME_MODES = {
+  swap: { label: 'Swap Puzzle', icon: '⇄', description: 'Swap scrambled tiles until the artwork is back where it belongs.', difficulties: SWAP_DIFFICULTIES },
+  jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
+};
+
 const STORAGE_KEY = 'gutterGrinPuzzlePanic.v1';
 const defaultState = {
   profile: { provider: 'guest', name: 'Guest Player', uid: null },
   coins: 250,
+  selectedMode: 'swap',
   difficulty: 'normal',
   completed: {},
   purchasedPacks: ['starter'],
@@ -38,6 +55,7 @@ let game = null;
 let timerHandle = null;
 let previewHandle = null;
 let firebaseContext = null;
+let puzzleFlow = { step: 'mode', puzzleId: null };
 
 async function getFirebaseContext() {
   const config = window.GG_FIREBASE_CONFIG;
@@ -100,6 +118,7 @@ function getCloudSavePayload() {
   return {
     version: 1,
     coins: Number(state.coins || 0),
+    selectedMode: GAME_MODES[state.selectedMode] ? state.selectedMode : 'swap',
     difficulty: state.difficulty || 'normal',
     completed: state.completed || {},
     purchasedPacks: Array.isArray(state.purchasedPacks)
@@ -170,6 +189,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       ...structuredClone(defaultState),
       profile: signedInProfile,
       coins: cloud.coins ?? defaultState.coins,
+      selectedMode: GAME_MODES[cloud.selectedMode] ? cloud.selectedMode : 'swap',
       difficulty: cloud.difficulty ?? defaultState.difficulty,
       completed: cloud.completed || {},
       purchasedPacks: Array.isArray(cloud.purchasedPacks)
@@ -211,7 +231,9 @@ const viewHost = $('#viewHost');
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    return { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
+    const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
+    loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
+    return loaded;
   } catch {
     return structuredClone(defaultState);
   }
@@ -253,6 +275,7 @@ function updateWallet() {
 }
 
 function navigate(view) {
+  if (view === 'puzzles' && currentView !== 'puzzles') puzzleFlow = { step: 'mode', puzzleId: null };
   currentView = view;
   $$('.nav-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.nav === view));
   renderView();
@@ -267,8 +290,15 @@ function renderView() {
   updateWallet();
 }
 
-function completionCountForPuzzle(id) {
-  return Object.keys(state.completed || {}).filter((key) => key.startsWith(`${id}:`)).length;
+function completionKey(mode, puzzleId, difficulty) {
+  // Preserve legacy Swap keys; reserve a mode prefix for future Jigsaw clears.
+  return mode === 'swap' ? `${puzzleId}:${difficulty}` : `${mode}:${puzzleId}:${difficulty}`;
+}
+
+function completionCountForPuzzle(id, mode = 'swap') {
+  return Object.keys(state.completed || {}).filter((key) => mode === 'swap'
+    ? key.startsWith(`${id}:`)
+    : key.startsWith(`${mode}:${id}:`)).length;
 }
 
 function renderHome() {
@@ -281,7 +311,7 @@ function renderHome() {
         <p>Pick a Gutter Grin artwork, choose your difficulty, and swap scrambled pieces until the picture is whole again.</p>
         <div class="hero-actions">
           <button class="btn primary" id="quickPlayBtn">Quick Play</button>
-          <button class="btn subtle" data-go="puzzles">Choose a Puzzle</button>
+          <button class="btn subtle" data-go="puzzles">Choose a Mode</button>
         </div>
       </div>
     </section>
@@ -290,24 +320,25 @@ function renderHome() {
       <div><h3>Starter Pack</h3><p>${completedUnique} of ${PUZZLES.length} puzzles completed</p></div>
       <button class="text-btn" data-go="puzzles">See all</button>
     </div>
-    <div class="puzzle-grid">${PUZZLES.slice(0,5).map(puzzleCard).join('')}</div>
+    <div class="puzzle-grid">${PUZZLES.slice(0,5).map((puzzle) => puzzleCard(puzzle, 'browse')).join('')}</div>
   `;
   bindViewEvents();
   $('#quickPlayBtn').addEventListener('click', () => {
-    const incomplete = PUZZLES.find((p) => !state.completed[`${p.id}:${state.difficulty}`]);
-    startGame(incomplete || PUZZLES[Math.floor(Math.random() * PUZZLES.length)]);
+    puzzleFlow = { step: 'mode', puzzleId: null };
+    navigate('puzzles');
   });
 }
 
-function puzzleCard(puzzle) {
-  const solved = completionCountForPuzzle(puzzle.id) > 0;
+function puzzleCard(puzzle, context = 'select') {
+  const mode = context === 'browse' ? 'swap' : state.selectedMode;
+  const solved = completionCountForPuzzle(puzzle.id, mode) > 0;
   return `
-    <button class="puzzle-card" data-puzzle="${puzzle.id}">
+    <button class="puzzle-card" ${context === 'browse' ? 'data-go="puzzles"' : `data-puzzle="${puzzle.id}"`}>
       <img class="puzzle-thumb" src="${puzzle.image}" alt="${escapeHtml(puzzle.title)} puzzle artwork" loading="lazy" />
       <div class="puzzle-info">
         <strong>${escapeHtml(puzzle.title)}</strong>
         <div class="puzzle-meta">
-          <span>${DIFFICULTIES[state.difficulty].label} · ${DIFFICULTIES[state.difficulty].cols}×${DIFFICULTIES[state.difficulty].rows}</span>
+          <span>${context === 'browse' ? 'Choose mode to play' : GAME_MODES[mode].label}</span>
           <span class="${solved ? 'complete-dot' : ''}">${solved ? '✓ Solved' : 'Play'}</span>
         </div>
       </div>
@@ -315,22 +346,77 @@ function puzzleCard(puzzle) {
 }
 
 function renderPuzzles() {
+  if (puzzleFlow.step === 'mode') return renderModeSelection();
+  if (puzzleFlow.step === 'puzzle') return renderPuzzleSelection();
+  return renderDifficultySelection();
+}
+
+function flowHeader(kicker, title, copy, backStep) {
+  return `<div class="flow-head">
+    ${backStep ? `<button class="flow-back" data-flow-back="${backStep}" aria-label="Go back">← Back</button>` : '<span></span>'}
+    <p class="eyebrow">${kicker}</p><h2>${title}</h2><p>${copy}</p>
+  </div>`;
+}
+
+function renderModeSelection() {
   viewHost.innerHTML = `
-    <div class="section-head" style="margin-top:4px">
-      <div><h3>Your Puzzles</h3><p>Every attached launch artwork is a separate puzzle.</p></div>
-    </div>
-    <div class="difficulty-bar">
-      <label for="difficultySelect">Difficulty</label>
-      <select id="difficultySelect" class="select">
-        ${Object.entries(DIFFICULTIES).map(([key,d]) => `<option value="${key}" ${key === state.difficulty ? 'selected' : ''}>${d.label} · ${d.cols}×${d.rows} · +${d.reward} coins</option>`).join('')}
-      </select>
-    </div>
-    <div class="puzzle-grid">${PUZZLES.map(puzzleCard).join('')}</div>
+    ${flowHeader('STEP 1 OF 4', 'Choose your mode', 'How do you want to put the chaos back together?')}
+    <div class="mode-grid">${Object.entries(GAME_MODES).map(([key, mode]) => `
+      <button class="mode-card ${key}" data-mode="${key}">
+        <span class="mode-icon">${mode.icon}</span><span><strong>${mode.label}</strong><small>${mode.description}</small></span><b>Choose →</b>
+      </button>`).join('')}</div>
   `;
-  bindViewEvents();
-  $('#difficultySelect').addEventListener('change', (e) => {
-    state.difficulty = e.target.value;
+  $$('[data-mode]').forEach((button) => button.addEventListener('click', () => {
+    state.selectedMode = button.dataset.mode;
     saveState();
+    puzzleFlow = { step: 'puzzle', puzzleId: null };
+    renderPuzzles();
+  }));
+}
+
+function renderPuzzleSelection() {
+  viewHost.innerHTML = `${flowHeader('STEP 2 OF 4', 'Choose an artwork', `${GAME_MODES[state.selectedMode].label} · Starter Pack`, 'mode')}
+    <div class="puzzle-grid">${PUZZLES.map((puzzle) => puzzleCard(puzzle)).join('')}</div>`;
+  bindFlowBack();
+  bindViewEvents();
+}
+
+function timeBonusLabel(diff) {
+  if (diff.timeBonus.type === 'sliding') return `+${diff.timeBonus.minCoins}–${diff.timeBonus.maxCoins} time bonus · ${diff.timeBonus.fastestSeconds / 60}–${diff.timeBonus.slowestSeconds / 60} min window`;
+  return '+40 ≤60 min · +30 ≤120 · +20 ≤180';
+}
+
+function renderDifficultySelection() {
+  const puzzle = PUZZLES.find((item) => item.id === puzzleFlow.puzzleId);
+  if (!puzzle) { puzzleFlow = { step: 'puzzle', puzzleId: null }; return renderPuzzles(); }
+  const difficulties = GAME_MODES[state.selectedMode].difficulties;
+  viewHost.innerHTML = `${flowHeader('STEP 3 OF 4', 'Choose difficulty', `${puzzle.title} · ${GAME_MODES[state.selectedMode].label}`, 'puzzle')}
+    <div class="difficulty-grid">${Object.entries(difficulties).map(([key, diff]) => `
+      <button class="difficulty-card ${key === state.difficulty ? 'selected' : ''}" data-difficulty="${key}">
+        <span><strong>${diff.label}</strong><small>${state.selectedMode === 'swap' ? `${diff.cols}×${diff.rows} grid` : `${diff.pieces.toLocaleString()} pieces`}</small></span>
+        <span class="reward-line">+${diff.reward} base coins</span>
+        ${state.selectedMode === 'jigsaw' ? `<small class="bonus-line">${timeBonusLabel(diff)}</small>` : ''}
+      </button>`).join('')}</div>
+    <section class="play-panel"><p class="eyebrow">STEP 4 OF 4</p><h3>Ready to panic?</h3><p>${puzzle.title} · ${difficulties[state.difficulty].label}</p><button class="btn primary xl" id="playSelectedBtn">Play ${GAME_MODES[state.selectedMode].label}</button></section>`;
+  bindFlowBack();
+  $$('[data-difficulty]').forEach((button) => button.addEventListener('click', () => {
+    state.difficulty = button.dataset.difficulty;
+    saveState();
+    renderDifficultySelection();
+  }));
+  $('#playSelectedBtn').addEventListener('click', () => {
+    if (state.selectedMode === 'jigsaw') {
+      showModal('Classic Jigsaw Is Coming Next', 'Your artwork and difficulty are locked in. The interlocking jigsaw engine is currently in development and will arrive in the next stage.', [{ label: 'Back to Difficulties', primary: true }], '🧩');
+      return;
+    }
+    startGame(puzzle);
+  });
+}
+
+function bindFlowBack() {
+  $('[data-flow-back]')?.addEventListener('click', (event) => {
+    puzzleFlow.step = event.currentTarget.dataset.flowBack;
+    if (puzzleFlow.step === 'mode') puzzleFlow.puzzleId = null;
     renderPuzzles();
   });
 }
@@ -427,14 +513,17 @@ function bindViewEvents() {
   $$('[data-go]').forEach((el) => el.addEventListener('click', () => navigate(el.dataset.go)));
   $$('[data-puzzle]').forEach((el) => el.addEventListener('click', () => {
     const puzzle = PUZZLES.find((p) => p.id === el.dataset.puzzle);
-    if (puzzle) startGame(puzzle);
+    if (puzzle) {
+      puzzleFlow = { step: 'difficulty', puzzleId: puzzle.id };
+      renderPuzzles();
+    }
   }));
 }
 
 function startGame(puzzle) {
   clearInterval(timerHandle);
   clearTimeout(previewHandle);
-  const diff = DIFFICULTIES[state.difficulty];
+  const diff = SWAP_DIFFICULTIES[state.difficulty];
   const count = diff.cols * diff.rows;
   const pieces = Array.from({ length: count }, (_, i) => i);
   let shuffled = shuffle(pieces.slice());
@@ -530,7 +619,7 @@ function finishGame() {
   game.seconds = Math.max(1, Math.floor((Date.now() - game.startedAt) / 1000));
   $('#timerText').textContent = formatTime(game.seconds);
 
-  const key = `${game.puzzle.id}:${state.difficulty}`;
+  const key = completionKey('swap', game.puzzle.id, state.difficulty);
   const firstClear = !state.completed[key];
   const reward = firstClear ? game.diff.reward : Math.max(5, Math.round(game.diff.reward * 0.2));
   const prior = state.completed[key];
@@ -549,7 +638,7 @@ function finishGame() {
     'Puzzle Complete!',
     `${formatTime(game.seconds)} · ${game.moves} moves · ${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`,
     [
-      { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); navigate('puzzles'); } },
+      { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); puzzleFlow = { step: 'puzzle', puzzleId: null }; currentView = 'puzzles'; renderView(); } },
       { label: 'Play Again', primary: true, action: () => startGame(game.puzzle) },
     ],
     '✓'
@@ -814,12 +903,18 @@ $('#guestBtn').addEventListener('click', () => {
 });
 $('#googleBtn').addEventListener('click', () => signInWithProvider('google'));
 $('#facebookBtn').addEventListener('click', () => signInWithProvider('facebook'));
-$$('[data-nav]').forEach((btn) => btn.addEventListener('click', () => navigate(btn.dataset.nav)));
+$$('[data-nav]').forEach((btn) => btn.addEventListener('click', () => {
+  if (btn.dataset.nav === 'puzzles') puzzleFlow = { step: 'mode', puzzleId: null };
+  navigate(btn.dataset.nav);
+}));
 $('#exitGameBtn').addEventListener('click', () => {
   clearInterval(timerHandle);
+  const puzzleId = game?.puzzle?.id || puzzleFlow.puzzleId;
   game = null;
   showScreen(mainScreen);
-  navigate('puzzles');
+  puzzleFlow = { step: 'difficulty', puzzleId };
+  currentView = 'puzzles';
+  renderView();
 });
 $('#previewBtn').addEventListener('click', previewPuzzle);
 $('#reshuffleBtn').addEventListener('click', reshuffle);
