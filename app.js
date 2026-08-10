@@ -82,6 +82,29 @@ let activeJigsawSave = null;
 let jigsawLocalSaveTimer = null;
 let jigsawCloudSaveTimer = null;
 
+// TEMP DEV COIN GRANT - REMOVE AFTER USE
+const TEMP_DEV_COIN_GRANT_UID = 'mo9Lr2hd2DUjhlXkkrJsGk4ulhl1';
+let tempDevCoinGrantAppliedThisSession = false;
+
+async function applyTempDevCoinGrant(user) {
+  if (
+    tempDevCoinGrantAppliedThisSession ||
+    !user?.uid ||
+    user.uid !== TEMP_DEV_COIN_GRANT_UID ||
+    state.profile?.provider === 'guest' ||
+    state.profile?.uid !== user.uid
+  ) {
+    return false;
+  }
+
+  state.coins = 50000;
+  saveLocalState();
+  await savePlayerDataToCloud();
+  tempDevCoinGrantAppliedThisSession = true;
+  return true;
+}
+// END TEMP DEV COIN GRANT
+
 function jigsawSaveScope() { return state.profile?.uid || 'guest'; }
 function validActiveJigsawSave(save) {
   return !!save && save.v === 1 && PUZZLES.some((p) => p.id === save.puzzleId)
@@ -1811,6 +1834,9 @@ async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
       providerName,
       localBeforeSignIn
     );
+
+    // TEMP DEV COIN GRANT - REMOVE AFTER USE
+    await applyTempDevCoinGrant(user);
   } catch (cloudError) {
     console.error('Firestore sync failed:', cloudError);
   }
