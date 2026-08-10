@@ -123,6 +123,84 @@ function normalizeDailyChallengeStats(value) {
   };
 }
 
+const DEFAULT_LIFETIME_STATS = Object.freeze({
+  totalJigsawPiecesPlaced: 0,
+  toolsUsedLifetime: Object.freeze({ hints: 0, backgroundReveals: 0, edgeFinders: 0, autoPlaces: 0 }),
+});
+
+function normalizeLifetimeStats(value) {
+  const stats = value && typeof value === 'object' ? value : {};
+  const tools = stats.toolsUsedLifetime && typeof stats.toolsUsedLifetime === 'object' ? stats.toolsUsedLifetime : {};
+  return {
+    totalJigsawPiecesPlaced: Math.max(0, Number(stats.totalJigsawPiecesPlaced || 0)),
+    toolsUsedLifetime: {
+      hints: Math.max(0, Number(tools.hints || 0)),
+      backgroundReveals: Math.max(0, Number(tools.backgroundReveals || 0)),
+      edgeFinders: Math.max(0, Number(tools.edgeFinders || 0)),
+      autoPlaces: Math.max(0, Number(tools.autoPlaces || 0)),
+    },
+  };
+}
+
+function normalizeAchievements(value) {
+  const unlocked = value?.unlocked && typeof value.unlocked === 'object' ? value.unlocked : {};
+  return {
+    unlocked: Object.fromEntries(Object.entries(unlocked)
+      .filter(([id, record]) => typeof id === 'string' && record && typeof record.unlockedAt === 'string')
+      .map(([id, record]) => [id, { unlockedAt: record.unlockedAt }])),
+  };
+}
+
+function completionEntries() {
+  return Object.entries(state.completed || {}).filter(([, record]) => Number(record?.clears || 0) > 0);
+}
+
+function totalPuzzleCompletions() {
+  const recordedClears = completionEntries().reduce((total, [, record]) => total + Number(record.clears || 0), 0);
+  return Math.max(Number(state.puzzlesCompleted || 0), recordedClears);
+}
+
+function completedPuzzleInEitherMode(puzzleId) {
+  return completionEntries().some(([key]) => key.startsWith(`${puzzleId}:`) || key.startsWith(`jigsaw:${puzzleId}:`));
+}
+
+function completedJigsawDifficulty(difficulty) {
+  return completionEntries().some(([key]) => key.startsWith('jigsaw:') && key.endsWith(`:${difficulty}`));
+}
+
+function packCompletionCount(packId) {
+  return PUZZLES.filter((puzzle) => puzzle.pack === packId && completedPuzzleInEitherMode(puzzle.id)).length;
+}
+
+function ownedPackCount() {
+  return PACKS.filter((pack) => pack.owned || state.purchasedPacks.includes(pack.id)).length;
+}
+
+function lifetimeToolUseCount() {
+  return Object.values(normalizeLifetimeStats(state.lifetimeStats).toolsUsedLifetime).reduce((total, count) => total + count, 0);
+}
+
+const ACHIEVEMENTS = Object.freeze([
+  { id: 'first-piece-of-trash', title: 'First Piece of Trash', description: 'Complete your first puzzle.', category: 'general', icon: '🗑️', target: 1, unit: 'puzzles', progress: totalPuzzleCompletions },
+  { id: 'getting-the-hang-of-this', title: 'Getting the Hang of This', description: 'Complete 10 puzzles.', category: 'general', icon: '🏆', target: 10, unit: 'puzzles', progress: totalPuzzleCompletions },
+  { id: 'piece-addict', title: 'Piece Addict', description: 'Place 10,000 Jigsaw pieces.', category: 'general', icon: '🧩', target: 10000, unit: 'pieces', progress: () => normalizeLifetimeStats(state.lifetimeStats).totalJigsawPiecesPlaced },
+  { id: 'touch-grass', title: 'Touch Grass', description: 'Spend 10 hours solving puzzles.', category: 'general', icon: '🌱', target: 36000, unit: 'seconds', progress: () => state.totalSeconds || 0 },
+  { id: 'easy-does-it', title: 'Easy Does It', description: 'Complete an Easy Jigsaw puzzle.', category: 'difficulty', icon: '🙂', target: 1, progress: () => completedJigsawDifficulty('easy') ? 1 : 0 },
+  { id: 'normal-is-relative', title: 'Normal Is Relative', description: 'Complete a Normal Jigsaw puzzle.', category: 'difficulty', icon: '😅', target: 1, progress: () => completedJigsawDifficulty('normal') ? 1 : 0 },
+  { id: 'hard-headed', title: 'Hard Headed', description: 'Complete a Hard Jigsaw puzzle.', category: 'difficulty', icon: '🤕', target: 1, progress: () => completedJigsawDifficulty('hard') ? 1 : 0 },
+  { id: 'masochist', title: 'Masochist', description: 'Complete a 1,000-piece Insane Jigsaw puzzle.', category: 'difficulty', icon: '😈', target: 1, progress: () => completedJigsawDifficulty('insane') ? 1 : 0 },
+  { id: 'daily-dose', title: 'Daily Dose', description: 'Complete your first Daily Challenge.', category: 'daily', icon: '📅', target: 1, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).totalCompletions },
+  { id: 'three-day-bender', title: 'Three-Day Bender', description: 'Reach a 3-day Daily Challenge streak.', category: 'daily', icon: '🔥', target: 3, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).longestStreak },
+  { id: 'week-long-problem', title: 'Week-Long Problem', description: 'Reach a 7-day Daily Challenge streak.', category: 'daily', icon: '🔥', target: 7, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).longestStreak },
+  { id: 'habit-forming', title: 'Habit Forming', description: 'Complete 30 Daily Challenges.', category: 'daily', icon: '🗓️', target: 30, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).totalCompletions },
+  { id: 'dumpster-diver', title: 'Dumpster Diver', description: 'Complete every Raccoon Adventures puzzle.', category: 'collections', icon: '🦝', target: 5, unit: 'puzzles', progress: () => packCompletionCount('raccoon-adventures') },
+  { id: 'groovy-baby', title: 'Groovy, Baby', description: "Complete every Wild n' Groovy puzzle.", category: 'collections', icon: '🪩', target: 5, unit: 'puzzles', progress: () => packCompletionCount('wild-n-groovy') },
+  { id: 'quest-complete', title: 'Quest Complete', description: 'Complete every Epic Fantasy puzzle.', category: 'collections', icon: '🐉', target: 5, unit: 'puzzles', progress: () => packCompletionCount('epic-fantasy') },
+  { id: 'collector', title: 'Collector', description: 'Own every currently available puzzle pack.', category: 'collections', icon: '📦', target: () => PACKS.filter((pack) => pack.available).length, unit: 'packs', progress: ownedPackCount },
+  { id: 'need-a-little-help', title: 'Need a Little Help?', description: 'Use your first Jigsaw Tool.', category: 'tools', icon: '🛠️', target: 1, unit: 'tools', progress: lifetimeToolUseCount },
+  { id: 'training-wheels', title: 'Training Wheels', description: 'Use Auto-Place 25 times.', category: 'tools', icon: '✨', target: 25, unit: 'Auto-Places', progress: () => normalizeLifetimeStats(state.lifetimeStats).toolsUsedLifetime.autoPlaces },
+].map((achievement) => Object.freeze({ hidden: false, ...achievement })));
+
 const GAME_MODES = {
   swap: { label: 'Swap Puzzle', icon: '⇄', description: 'Swap scrambled tiles until the artwork is back where it belongs.', difficulties: SWAP_DIFFICULTIES },
   jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
@@ -141,6 +219,8 @@ const defaultState = {
   totalSeconds: 0,
   puzzlesCompleted: 0,
   dailyChallengeStats: { ...DEFAULT_DAILY_CHALLENGE_STATS },
+  lifetimeStats: { totalJigsawPiecesPlaced: 0, toolsUsedLifetime: { ...DEFAULT_LIFETIME_STATS.toolsUsedLifetime } },
+  achievements: { unlocked: {} },
 };
 
 let state = loadState();
@@ -154,6 +234,79 @@ let jigsawGame = null;
 let activeJigsawSave = null;
 let jigsawLocalSaveTimer = null;
 let jigsawCloudSaveTimer = null;
+let playerProgressCloudSaveTimer = null;
+const achievementNotificationQueue = [];
+let achievementNotificationActive = false;
+
+function achievementTarget(achievement) {
+  return typeof achievement.target === 'function' ? achievement.target() : achievement.target;
+}
+
+function evaluateAchievements({ notify = true } = {}) {
+  state.achievements = normalizeAchievements(state.achievements);
+  const newlyUnlocked = [];
+  ACHIEVEMENTS.forEach((achievement) => {
+    if (state.achievements.unlocked[achievement.id]) return;
+    const target = achievementTarget(achievement);
+    if (Number(achievement.progress()) < target) return;
+    state.achievements.unlocked[achievement.id] = { unlockedAt: new Date().toISOString() };
+    newlyUnlocked.push(achievement);
+  });
+  if (notify && newlyUnlocked.length) queueAchievementNotifications(newlyUnlocked);
+  return newlyUnlocked;
+}
+
+function queueAchievementNotifications(achievements) {
+  achievementNotificationQueue.push(...achievements);
+  showNextAchievementNotification();
+}
+
+function showNextAchievementNotification() {
+  if (achievementNotificationActive || !achievementNotificationQueue.length) return;
+  achievementNotificationActive = true;
+  const achievement = achievementNotificationQueue.shift();
+  const toast = document.createElement('div');
+  toast.className = 'achievement-toast';
+  toast.setAttribute('role', 'status');
+  toast.innerHTML = `<span>${achievement.icon}</span><div><small>🏆 ACHIEVEMENT UNLOCKED!</small><strong>${escapeHtml(achievement.title)}</strong><p>${escapeHtml(achievement.description)}</p></div>`;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.remove();
+    achievementNotificationActive = false;
+    showNextAchievementNotification();
+  }, 3800);
+}
+
+function schedulePlayerProgressSave() {
+  saveLocalState();
+  if (!state.profile?.uid || state.profile.provider === 'guest') return;
+  clearTimeout(playerProgressCloudSaveTimer);
+  playerProgressCloudSaveTimer = setTimeout(() => {
+    savePlayerDataToCloud().catch((error) => console.error('Progress cloud save failed:', error));
+  }, 1500);
+}
+
+async function flushPlayerProgressSave() {
+  clearTimeout(playerProgressCloudSaveTimer);
+  saveLocalState();
+  if (!state.profile?.uid || state.profile.provider === 'guest') return;
+  try { await savePlayerDataToCloud(); } catch (error) { console.error('Progress cloud save failed:', error); }
+}
+
+function recordLifetimeJigsawPiecesPlaced(count) {
+  if (!Number.isInteger(count) || count <= 0) return;
+  state.lifetimeStats = normalizeLifetimeStats(state.lifetimeStats);
+  state.lifetimeStats.totalJigsawPiecesPlaced += count;
+  evaluateAchievements();
+  schedulePlayerProgressSave();
+}
+
+function recordLifetimeToolUse(counter) {
+  if (!Object.hasOwn(DEFAULT_LIFETIME_STATS.toolsUsedLifetime, counter)) return;
+  state.lifetimeStats = normalizeLifetimeStats(state.lifetimeStats);
+  state.lifetimeStats.toolsUsedLifetime[counter] += 1;
+  evaluateAchievements();
+}
 
 function jigsawSaveScope() { return state.profile?.uid || 'guest'; }
 function validActiveJigsawSave(save) {
@@ -291,6 +444,8 @@ function getCloudSavePayload() {
     totalSeconds: Number(state.totalSeconds || 0),
     puzzlesCompleted: Number(state.puzzlesCompleted || 0),
     dailyChallengeStats: normalizeDailyChallengeStats(state.dailyChallengeStats),
+    lifetimeStats: normalizeLifetimeStats(state.lifetimeStats),
+    achievements: normalizeAchievements(state.achievements),
   };
 }
 
@@ -340,9 +495,9 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     provider: providerName,
     name:
       user.displayName ||
-      user.email ||
       `${capitalize(providerName)} Player`,
     uid: user.uid,
+    photoURL: user.photoURL || null,
   };
 
   // Existing cloud save: cloud data wins.
@@ -363,6 +518,8 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       totalSeconds: cloud.totalSeconds ?? 0,
       puzzlesCompleted: cloud.puzzlesCompleted ?? 0,
       dailyChallengeStats: normalizeDailyChallengeStats(cloud.dailyChallengeStats),
+      lifetimeStats: normalizeLifetimeStats(cloud.lifetimeStats),
+      achievements: normalizeAchievements(cloud.achievements),
     };
 
     saveLocalState();
@@ -379,6 +536,8 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       ? [...localBeforeSignIn.purchasedPacks]
       : ['starter'],
     dailyChallengeStats: normalizeDailyChallengeStats(localBeforeSignIn.dailyChallengeStats),
+    lifetimeStats: normalizeLifetimeStats(localBeforeSignIn.lifetimeStats),
+    achievements: normalizeAchievements(localBeforeSignIn.achievements),
   };
 
   saveLocalState();
@@ -402,6 +561,8 @@ function loadState() {
     const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
     loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
     loaded.dailyChallengeStats = normalizeDailyChallengeStats(saved?.dailyChallengeStats);
+    loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
+    loaded.achievements = normalizeAchievements(saved?.achievements);
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -519,6 +680,7 @@ function completeJigsawToolPurchase(engine, toolId) {
   engine.assisted = true;
   engine.toolsUsed[tool.counter] += 1;
   engine.coinsSpentOnTools += tool.cost;
+  recordLifetimeToolUse(tool.counter);
   if (engine.placed === engine.pieceCount) {
     updateWallet();
     finishJigsaw(engine);
@@ -820,26 +982,70 @@ function buyPack(packId) {
   if (state.coins < pack.price) return showModal('Not Enough Coins', `You need ${pack.price - state.coins} more coins for this pack.`, [{ label: 'Got it', primary: true }], '🪙');
   state.coins -= pack.price;
   state.purchasedPacks.push(pack.id);
+  evaluateAchievements();
   saveState();
   showToast(`${pack.title} unlocked!`);
   renderShop();
 }
 
+function formatProfileDuration(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function achievementProgressLabel(achievement) {
+  const current = Math.max(0, Number(achievement.progress() || 0));
+  const target = achievementTarget(achievement);
+  if (achievement.unit === 'seconds') return `${formatProfileDuration(current)} / 10h`;
+  if (target === 1 && !achievement.unit) return current >= target ? 'Unlocked' : 'Locked';
+  return `${Math.min(current, target).toLocaleString()} / ${target.toLocaleString()}${achievement.unit ? ` ${achievement.unit}` : ''}`;
+}
+
 function renderProfile() {
+  const backfilled = evaluateAchievements({ notify: false });
+  if (backfilled.length) saveState();
   const profile = state.profile || defaultState.profile;
-  const providerLabel = profile.provider === 'guest' ? 'Guest · saved on this device' : `${capitalize(profile.provider)} account`;
+  const signedIn = profile.provider !== 'guest';
+  const providerLabel = signedIn ? `Signed In · ${capitalize(profile.provider)}` : 'Guest · saved on this device';
+  const lifetime = normalizeLifetimeStats(state.lifetimeStats);
+  const daily = normalizeDailyChallengeStats(state.dailyChallengeStats);
+  const entries = completionEntries();
+  const jigsawCompletions = entries.filter(([key]) => key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
+  const swapCompletions = entries.filter(([key]) => !key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
+  const ownedPacks = PACKS.filter((pack) => pack.owned || state.purchasedPacks.includes(pack.id));
+  const unlockedIds = state.achievements.unlocked;
+  const unlockedCount = ACHIEVEMENTS.filter((achievement) => unlockedIds[achievement.id]).length;
+  const categoryNames = { general: 'General', difficulty: 'Difficulty', daily: 'Daily', collections: 'Collections', tools: 'Tools' };
+  const avatar = signedIn && profile.photoURL
+    ? `<img id="profileAvatarImage" class="avatar avatar-image" src="${escapeHtml(profile.photoURL)}" alt="${escapeHtml(profile.name || 'Player')} profile photo" referrerpolicy="no-referrer" />`
+    : `<div class="avatar">${escapeHtml((profile.name || 'G').slice(0, 1).toUpperCase())}</div>`;
+  const fastestDaily = Number.isFinite(daily.fastestSeconds) ? formatTime(daily.fastestSeconds) : '—';
+
   viewHost.innerHTML = `
-    <div class="section-head" style="margin-top:4px"><div><h3>Player Profile</h3><p>Progress, currency and account connection.</p></div></div>
+    <div class="section-head profile-heading"><div><h3>Player Profile</h3><p>Your private progression, statistics, and achievements.</p></div></div>
     <section class="profile-card">
       <div class="profile-row">
-        <div class="avatar">${escapeHtml((profile.name || 'G').slice(0,1).toUpperCase())}</div>
+        ${avatar}
         <div><h3>${escapeHtml(profile.name || 'Guest Player')}</h3><p>${escapeHtml(providerLabel)}</p></div>
+        <div class="profile-wallet"><span>🪙</span><strong>${Number(state.coins || 0).toLocaleString()}</strong><small>COINS</small></div>
       </div>
-      <div class="stat-grid">
-        <div class="stat-box"><strong>${state.puzzlesCompleted || 0}</strong><small>COMPLETIONS</small></div>
-        <div class="stat-box"><strong>${state.totalMoves || 0}</strong><small>TOTAL MOVES</small></div>
-        <div class="stat-box"><strong>${state.coins || 0}</strong><small>COINS</small></div>
+      <div class="profile-stat-grid">
+        <div class="profile-stat"><span>🏆</span><strong>${totalPuzzleCompletions().toLocaleString()}</strong><small>Puzzles Completed</small></div>
+        <div class="profile-stat"><span>🧩</span><strong>${lifetime.totalJigsawPiecesPlaced.toLocaleString()}</strong><small>Jigsaw Pieces Placed</small></div>
+        <div class="profile-stat"><span>↔</span><strong>${Number(state.totalMoves || 0).toLocaleString()}</strong><small>Total Moves</small></div>
+        <div class="profile-stat"><span>⏱</span><strong>${formatProfileDuration(state.totalSeconds)}</strong><small>Total Puzzle Time</small></div>
+        <div class="profile-stat"><span>⇄</span><strong>${swapCompletions.toLocaleString()}</strong><small>Swap Completions</small></div>
+        <div class="profile-stat"><span>🧩</span><strong>${jigsawCompletions.toLocaleString()}</strong><small>Jigsaw Completions</small></div>
+        <div class="profile-stat"><span>📦</span><strong>${ownedPacks.length} / ${PACKS.filter((pack) => pack.available).length}</strong><small>Owned Packs</small></div>
+        <div class="profile-stat"><span>📅</span><strong>${daily.totalCompletions.toLocaleString()}</strong><small>Daily Challenges</small></div>
+        <div class="profile-stat"><span>🔥</span><strong>${daily.currentStreak.toLocaleString()}</strong><small>Current Streak</small></div>
+        <div class="profile-stat"><span>🔥</span><strong>${daily.longestStreak.toLocaleString()}</strong><small>Longest Streak</small></div>
+        <div class="profile-stat"><span>⚡</span><strong>${fastestDaily}</strong><small>Fastest Daily</small></div>
+        <div class="profile-stat"><span>💰</span><strong>${Number(state.coins || 0).toLocaleString()}</strong><small>Current Coins</small></div>
       </div>
+      <div class="owned-pack-list"><strong>Owned Packs</strong><p>${ownedPacks.map((pack) => escapeHtml(pack.title)).join(' · ')}</p></div>
       <div class="profile-actions">
         ${profile.provider === 'guest' ? `
           <button class="btn provider" id="profileGoogleBtn"><span class="provider-icon">G</span> Connect Google</button>
@@ -848,9 +1054,32 @@ function renderProfile() {
         <button class="btn ghost" id="resetBtn">Reset Local Progress</button>
       </div>
     </section>
+
+    <div class="section-head achievements-heading"><div><h3>Achievements</h3><p>Unlocked ${unlockedCount} / ${ACHIEVEMENTS.length}</p></div></div>
+    <div class="achievement-groups">
+      ${Object.entries(categoryNames).map(([category, label]) => `
+        <section class="achievement-group"><h4>${label}</h4><div class="achievement-grid">
+          ${ACHIEVEMENTS.filter((achievement) => achievement.category === category).map((achievement) => {
+            const unlocked = !!unlockedIds[achievement.id];
+            const current = Math.max(0, Number(achievement.progress() || 0));
+            const target = achievementTarget(achievement);
+            const percent = Math.max(0, Math.min(100, current / target * 100));
+            return `<article class="achievement-card ${unlocked ? 'unlocked' : 'locked'}">
+              <span class="achievement-icon">${achievement.icon}</span><div><h5>${escapeHtml(achievement.title)}</h5><p>${escapeHtml(achievement.description)}</p>
+              <div class="achievement-progress"><span style="width:${percent}%"></span></div><small>${achievementProgressLabel(achievement)}</small></div>
+            </article>`;
+          }).join('')}
+        </div></section>`).join('')}
+    </div>
   `;
   $('#profileGoogleBtn')?.addEventListener('click', () => signInWithProvider('google'));
   $('#profileFacebookBtn')?.addEventListener('click', () => signInWithProvider('facebook'));
+  $('#profileAvatarImage')?.addEventListener('error', (event) => {
+    const fallback = document.createElement('div');
+    fallback.className = 'avatar';
+    fallback.textContent = (profile.name || 'P').slice(0, 1).toUpperCase();
+    event.currentTarget.replaceWith(fallback);
+  });
   $('#logoutBtn')?.addEventListener('click', async () => {
   try {
     const { auth, authMod } = await getFirebaseContext();
@@ -994,6 +1223,7 @@ function finishGame() {
   state.totalMoves = (state.totalMoves || 0) + game.moves;
   state.totalSeconds = (state.totalSeconds || 0) + game.seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  evaluateAchievements();
   saveState();
 
   showModal(
@@ -1130,6 +1360,7 @@ function finishJigsaw(engine) {
   state.totalMoves = (state.totalMoves || 0) + engine.moves;
   state.totalSeconds = (state.totalSeconds || 0) + seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  evaluateAchievements();
   saveState();
   clearActiveJigsawSave();
   setTimeout(() => showModal(
@@ -1973,6 +2204,7 @@ class JigsawEngine {
       if (!piece.placed) { piece.placed = true; newlyPlaced += 1; }
     });
     this.placed += newlyPlaced;
+    recordLifetimeJigsawPiecesPlaced(newlyPlaced);
     $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
     return true;
   }
@@ -2229,9 +2461,9 @@ async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
     provider: providerName,
     name:
       user.displayName ||
-      user.email ||
       `${capitalize(providerName)} Player`,
     uid: user.uid,
+    photoURL: user.photoURL || null,
   };
 
   // Save locally only until we've checked for an existing cloud save.
@@ -2507,7 +2739,11 @@ $('#exitJigsawBtn').addEventListener('click', () => {
       { label: 'Cancel' },
       { label: 'Delete Save', primary: true, action: async () => { await clearActiveJigsawSave(); returnFromJigsaw(); } },
     ], '!') },
-    { label: 'Save & Exit', primary: true, action: async () => { await scheduleActiveJigsawSave(jigsawGame, true); returnFromJigsaw(); } },
+    { label: 'Save & Exit', primary: true, action: async () => {
+      await scheduleActiveJigsawSave(jigsawGame, true);
+      await flushPlayerProgressSave();
+      returnFromJigsaw();
+    } },
   ], '↩');
 });
 

@@ -200,13 +200,42 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
 .profile-card { background:var(--panel); border:1px solid var(--line); border-radius:22px; padding:22px; }
 .profile-row { display:flex; align-items:center; gap:14px; }
 .avatar { width:58px; height:58px; border-radius:50%; display:grid; place-items:center; font-weight:1000; font-size:22px; background:#29292f; border:2px solid var(--accent); }
+.avatar-image { object-fit:cover; }
 .profile-row h3 { margin:0 0 4px; }
 .profile-row p { margin:0; color:var(--muted); font-size:13px; }
-.stat-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:18px; }
-.stat-box { background:var(--panel-2); border-radius:14px; padding:14px 10px; text-align:center; }
-.stat-box strong { display:block; font-size:21px; }
-.stat-box small { color:var(--muted); font-size:10px; }
+.profile-wallet { margin-left:auto; display:grid; grid-template-columns:auto auto; align-items:center; gap:0 5px; text-align:right; }
+.profile-wallet strong { color:var(--gold); font-size:20px; }
+.profile-wallet small { grid-column:1 / -1; color:var(--muted); font-size:9px; }
+.profile-stat-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:20px; }
+.profile-stat { min-width:0; padding:13px 10px; text-align:center; background:var(--panel-2); border:1px solid var(--line); border-radius:14px; }
+.profile-stat > span { display:block; font-size:19px; }
+.profile-stat strong { display:block; margin-top:3px; font-size:19px; overflow:hidden; text-overflow:ellipsis; }
+.profile-stat small { display:block; margin-top:2px; color:var(--muted); font-size:9px; text-transform:uppercase; }
+.owned-pack-list { margin-top:14px; padding:12px 14px; border:1px solid var(--line); border-radius:13px; background:rgba(0,0,0,.14); }
+.owned-pack-list strong { font-size:12px; }
+.owned-pack-list p { margin:4px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
 .profile-actions { display:grid; gap:10px; margin-top:18px; }
+.achievements-heading { margin-top:34px; }
+.achievement-groups { display:grid; gap:22px; }
+.achievement-group h4 { margin:0 0 10px; color:var(--accent-2); text-transform:uppercase; letter-spacing:.08em; font-size:12px; }
+.achievement-grid { display:grid; gap:10px; }
+.achievement-card { display:grid; grid-template-columns:48px 1fr; gap:12px; align-items:start; padding:14px; border:1px solid var(--line); border-radius:16px; background:var(--panel); }
+.achievement-card.locked { opacity:.62; filter:saturate(.45); }
+.achievement-card.unlocked { border-color:rgba(185,255,54,.42); background:linear-gradient(135deg,rgba(185,255,54,.07),var(--panel)); }
+.achievement-icon { width:48px; height:48px; display:grid; place-items:center; border-radius:13px; background:var(--panel-2); font-size:24px; }
+.achievement-card h5 { margin:0; font-size:15px; }
+.achievement-card p { margin:3px 0 8px; color:var(--muted); font-size:11px; line-height:1.4; }
+.achievement-card small { display:block; margin-top:5px; color:var(--muted); font-size:10px; }
+.achievement-card.unlocked small { color:var(--accent-2); }
+.achievement-progress { height:5px; overflow:hidden; border-radius:999px; background:#29292f; }
+.achievement-progress span { display:block; height:100%; border-radius:inherit; background:var(--accent-2); }
+.achievement-toast { position:fixed; z-index:140; top:18px; right:18px; width:min(390px,calc(100vw - 36px)); display:grid; grid-template-columns:46px 1fr; gap:12px; align-items:center; padding:14px; border:1px solid rgba(185,255,54,.55); border-radius:16px; background:#19191e; box-shadow:var(--shadow); animation:achievement-in .25s ease; }
+.achievement-toast > span { font-size:30px; text-align:center; }
+.achievement-toast small,.achievement-toast strong,.achievement-toast p { display:block; }
+.achievement-toast small { color:var(--accent-2); font-size:9px; letter-spacing:.06em; }
+.achievement-toast strong { margin-top:2px; }
+.achievement-toast p { margin:3px 0 0; color:var(--muted); font-size:11px; line-height:1.35; }
+@keyframes achievement-in { from { opacity:0; transform:translateY(-10px); } }
 
 .bottom-nav {
   position: fixed;
@@ -309,6 +338,8 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
   .puzzle-grid { grid-template-columns: repeat(3, minmax(0,1fr)); gap:16px; }
   .shop-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .mode-grid,.difficulty-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .profile-stat-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .achievement-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .bottom-nav { left:50%; right:auto; transform:translateX(-50%); width:min(560px,calc(100% - 28px)); bottom:14px; border:1px solid var(--line); border-radius:20px; padding:9px 10px; }
 }
 
