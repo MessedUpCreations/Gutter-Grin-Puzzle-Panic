@@ -1,17 +1,37 @@
 const PUZZLES = [
-  { id: 'smooch-mode', title: 'Smooch Mode', image: 'assets/smooch-mode.webp', width: 1400, height: 1188, pack: 'starter' },
-  { id: 'cat-mode', title: 'Cat Mode', image: 'assets/cat-mode.webp', width: 1254, height: 1254, pack: 'starter' },
-  { id: 'yas-queens', title: 'Yas Queens', image: 'assets/yas-queens.webp', width: 1166, height: 1400, pack: 'starter' },
-  { id: 'damn-that-raccoon', title: 'Damn That Raccoon!', image: 'assets/damn-that-raccoon.webp', width: 1166, height: 1400, pack: 'starter' },
-  { id: 'gutter-grin', title: 'Gutter Grin', image: 'assets/gutter-grin.webp', width: 1166, height: 1400, pack: 'starter' },
+  // Keep these five legacy IDs stable so existing completion and Jigsaw save keys remain valid.
+  { id: 'smooch-mode', title: 'Backyard Cookout', image: 'assets/puzzles/starter/backyard-cookout.webp', width: 1402, height: 1122, pack: 'starter' },
+  { id: 'cat-mode', title: 'Chaotic Garage Sale', image: 'assets/puzzles/starter/chaotic-garage-sale.webp', width: 1402, height: 1122, pack: 'starter' },
+  { id: 'yas-queens', title: 'Laundromat From Hell', image: 'assets/puzzles/starter/laundromat-from-hell.webp', width: 1402, height: 1122, pack: 'starter' },
+  { id: 'damn-that-raccoon', title: 'Raccoon Eating Pizza', image: 'assets/puzzles/starter/raccoon-eating-pizza.webp', width: 1402, height: 1122, pack: 'starter' },
+  { id: 'gutter-grin', title: "The Dragon's Pit", image: 'assets/puzzles/starter/the-dragons-pit.webp', width: 1402, height: 1122, pack: 'starter' },
+  { id: 'raccoon-campfire', title: 'Raccoon Campfire', image: 'assets/puzzles/raccoon-adventures/raccoon-campfire.webp', width: 1402, height: 1122, pack: 'raccoon-adventures' },
+  { id: 'raccoon-dumpster-fire', title: 'Raccoon Dumpster Fire', image: 'assets/puzzles/raccoon-adventures/raccoon-dumpster-fire.webp', width: 1154, height: 1363, pack: 'raccoon-adventures' },
+  { id: 'raccoon-goes-camping', title: 'Raccoon Goes Camping', image: 'assets/puzzles/raccoon-adventures/raccoon-goes-camping.webp', width: 1402, height: 1122, pack: 'raccoon-adventures' },
+  { id: 'raccoon-grocery-run', title: 'Raccoon Grocery Run', image: 'assets/puzzles/raccoon-adventures/raccoon-grocery-run.webp', width: 1464, height: 1075, pack: 'raccoon-adventures' },
+  { id: 'raccoon-pirate-adventure', title: 'Raccoon Pirate Adventure', image: 'assets/puzzles/raccoon-adventures/raccoon-pirate-adventure.webp', width: 1536, height: 1024, pack: 'raccoon-adventures' },
+  { id: 'disco-apocalypse', title: 'Disco Apocalypse', image: 'assets/puzzles/wild-n-groovy/disco-apocalypse.webp', width: 1402, height: 1122, pack: 'wild-n-groovy' },
+  { id: 'groovy-shrooms', title: 'Groovy Shrooms', image: 'assets/puzzles/wild-n-groovy/groovy-shrooms.webp', width: 3000, height: 3000, pack: 'wild-n-groovy' },
+  { id: 'groovy-van-vibes', title: 'Groovy Van Vibes', image: 'assets/puzzles/wild-n-groovy/groovy-van-vibes.webp', width: 1920, height: 1920, pack: 'wild-n-groovy' },
+  { id: 'groovy-shrooms-2', title: 'Groovy Shrooms 2', image: 'assets/puzzles/wild-n-groovy/groovy-shrooms-2.webp', width: 1500, height: 1000, pack: 'wild-n-groovy' },
+  { id: 'groovy-van-2', title: 'Groovy Van 2', image: 'assets/puzzles/wild-n-groovy/groovy-van-2.webp', width: 2560, height: 2560, pack: 'wild-n-groovy' },
+  { id: 'blacksmith-working', title: 'Blacksmith Working', image: 'assets/puzzles/epic-fantasy/blacksmith-working.webp', width: 1536, height: 1024, pack: 'epic-fantasy' },
+  { id: 'dragon-castle', title: 'Dragon Castle', image: 'assets/puzzles/epic-fantasy/dragon-castle.webp', width: 1254, height: 1254, pack: 'epic-fantasy' },
+  { id: 'dwarven-pub', title: 'Dwarven Pub', image: 'assets/puzzles/epic-fantasy/dwarven-pub.webp', width: 1254, height: 1254, pack: 'epic-fantasy' },
+  { id: 'miners-haven', title: "Miners' Haven", image: 'assets/puzzles/epic-fantasy/miners-haven.webp', width: 1536, height: 1024, pack: 'epic-fantasy' },
+  { id: 'overcast-forest', title: 'Overcast Forest', image: 'assets/puzzles/epic-fantasy/overcast-forest.webp', width: 1536, height: 1024, pack: 'epic-fantasy' },
 ];
 
 const PACKS = [
-  { id: 'starter', title: 'Gutter Grin Starter Pack', count: 5, price: 0, owned: true, available: true, image: 'assets/gutter-grin.webp', description: 'The five launch puzzles included with the game.' },
-  { id: 'raccoon-adventures', title: 'Raccoon Adventures', count: 5, price: 500, owned: false, available: false, description: 'More trash-panda trouble is on the way.' },
-  { id: 'wild-groovy', title: "Wild n' Groovy", count: 5, price: 500, owned: false, available: false, description: 'A future pack of wild, groovy artwork.' },
-  { id: 'epic-fantasy', title: 'Epic Fantasy', count: 5, price: 500, owned: false, available: false, description: 'A future collection of fantastic adventures.' },
+  { id: 'starter', title: 'Starter Pack', count: 5, price: 0, owned: true, available: true, image: 'assets/puzzles/starter/backyard-cookout.webp', description: 'Five chaotic puzzles included with the game.' },
+  { id: 'raccoon-adventures', title: 'Raccoon Adventures', count: 5, price: 500, owned: false, available: true, image: 'assets/puzzles/raccoon-adventures/raccoon-campfire.webp', description: 'Trash-panda trouble from the campground to the high seas.' },
+  { id: 'wild-n-groovy', title: "Wild n' Groovy", count: 5, price: 500, owned: false, available: true, image: 'assets/puzzles/wild-n-groovy/disco-apocalypse.webp', description: 'Disco chaos, psychedelic shrooms, and groovy vans.' },
+  { id: 'epic-fantasy', title: 'Epic Fantasy', count: 5, price: 500, owned: false, available: true, image: 'assets/puzzles/epic-fantasy/dragon-castle.webp', description: 'Dragons, dwarves, blacksmiths, and fantastic wilds.' },
 ];
+
+function ownsPack(pack) {
+  return pack.owned || state.purchasedPacks.includes(pack.id);
+}
 
 const SWAP_DIFFICULTIES = {
   easy:   { label: 'Easy', cols: 3, rows: 3, reward: 10 },
@@ -374,7 +394,8 @@ function completionCountForPuzzle(id, mode = 'swap') {
 }
 
 function renderHome() {
-  const completedUnique = PUZZLES.filter((p) => completionCountForPuzzle(p.id) > 0).length;
+  const starterPuzzles = PUZZLES.filter((p) => p.pack === 'starter');
+  const completedUnique = starterPuzzles.filter((p) => completionCountForPuzzle(p.id) > 0).length;
   viewHost.innerHTML = `
     <section class="hero">
       <div class="hero-content">
@@ -389,10 +410,10 @@ function renderHome() {
     </section>
 
     <div class="section-head">
-      <div><h3>Starter Pack</h3><p>${completedUnique} of ${PUZZLES.length} puzzles completed</p></div>
+      <div><h3>Starter Pack</h3><p>${completedUnique} of ${starterPuzzles.length} puzzles completed</p></div>
       <button class="text-btn" data-go="puzzles">See all</button>
     </div>
-    <div class="puzzle-grid">${PUZZLES.slice(0,5).map((puzzle) => puzzleCard(puzzle, 'browse')).join('')}</div>
+    <div class="puzzle-grid">${starterPuzzles.map((puzzle) => puzzleCard(puzzle, 'browse')).join('')}</div>
   `;
   bindViewEvents();
   $('#quickPlayBtn').addEventListener('click', () => {
@@ -451,8 +472,10 @@ function renderModeSelection() {
 }
 
 function renderPuzzleSelection() {
-  viewHost.innerHTML = `${flowHeader('STEP 2 OF 4', 'Choose an artwork', `${GAME_MODES[state.selectedMode].label} · Starter Pack`, 'mode')}
-    <div class="puzzle-grid">${PUZZLES.map((puzzle) => puzzleCard(puzzle)).join('')}</div>`;
+  const ownedPacks = PACKS.filter(ownsPack);
+  viewHost.innerHTML = `${flowHeader('STEP 2 OF 4', 'Choose an artwork', `${GAME_MODES[state.selectedMode].label} · ${ownedPacks.length} owned ${ownedPacks.length === 1 ? 'pack' : 'packs'}`, 'mode')}
+    ${ownedPacks.map((pack) => `<div class="section-head"><div><h3>${escapeHtml(pack.title)}</h3><p>${pack.count} puzzles</p></div></div>
+      <div class="puzzle-grid">${PUZZLES.filter((puzzle) => puzzle.pack === pack.id).map((puzzle) => puzzleCard(puzzle)).join('')}</div>`).join('')}`;
   bindFlowBack();
   bindViewEvents();
 }
@@ -504,11 +527,11 @@ function bindFlowBack() {
 function renderShop() {
   viewHost.innerHTML = `
     <div class="section-head" style="margin-top:4px">
-      <div><h3>Puzzle Shop</h3><p>Future packs can unlock with coins or real-money checkout later.</p></div>
+      <div><h3>Puzzle Shop</h3><p>Unlock new five-puzzle packs with coins.</p></div>
     </div>
     <div class="shop-grid">
       ${PACKS.map((pack) => {
-        const owned = pack.owned || state.purchasedPacks.includes(pack.id);
+        const owned = ownsPack(pack);
         return `
           <article class="pack-card">
             ${pack.image ? `<img class="pack-art" src="${pack.image}" alt="" />` : `<div class="pack-art pack-placeholder">🔒</div>`}
