@@ -1,8 +1,26 @@
-const CACHE = 'gutter-grin-puzzle-panic-v14';
+const CACHE = 'gutter-grin-puzzle-panic-v15';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
-  './assets/smooch-mode.webp', './assets/cat-mode.webp', './assets/yas-queens.webp',
-  './assets/damn-that-raccoon.webp', './assets/gutter-grin.webp',
+  './assets/puzzles/starter/backyard-cookout.webp',
+  './assets/puzzles/starter/chaotic-garage-sale.webp',
+  './assets/puzzles/starter/laundromat-from-hell.webp',
+  './assets/puzzles/starter/raccoon-eating-pizza.webp',
+  './assets/puzzles/starter/the-dragons-pit.webp',
+  './assets/puzzles/raccoon-adventures/raccoon-campfire.webp',
+  './assets/puzzles/raccoon-adventures/raccoon-dumpster-fire.webp',
+  './assets/puzzles/raccoon-adventures/raccoon-goes-camping.webp',
+  './assets/puzzles/raccoon-adventures/raccoon-grocery-run.webp',
+  './assets/puzzles/raccoon-adventures/raccoon-pirate-adventure.webp',
+  './assets/puzzles/wild-n-groovy/disco-apocalypse.webp',
+  './assets/puzzles/wild-n-groovy/groovy-shrooms.webp',
+  './assets/puzzles/wild-n-groovy/groovy-van-vibes.webp',
+  './assets/puzzles/wild-n-groovy/groovy-shrooms-2.webp',
+  './assets/puzzles/wild-n-groovy/groovy-van-2.webp',
+  './assets/puzzles/epic-fantasy/blacksmith-working.webp',
+  './assets/puzzles/epic-fantasy/dragon-castle.webp',
+  './assets/puzzles/epic-fantasy/dwarven-pub.webp',
+  './assets/puzzles/epic-fantasy/miners-haven.webp',
+  './assets/puzzles/epic-fantasy/overcast-forest.webp',
   './assets/icon-192.png', './assets/icon-512.png'
 ];
 
