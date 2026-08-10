@@ -110,9 +110,17 @@
       </div>
       <div class="jigsaw-stage">
         <canvas id="jigsawCanvas" tabindex="0" aria-label="Classic Jigsaw puzzle workspace"></canvas>
+        <div id="jigsawToolStatus" class="jigsaw-tool-status" role="status" hidden>
+          <span>Select a loose piece to reveal where it belongs.</span>
+          <button id="cancelJigsawToolBtn" class="btn ghost" type="button">Cancel</button>
+        </div>
       </div>
       <div class="jigsaw-controls">
         <button id="gatherJigsawBtn" class="btn subtle">↺ Gather Pieces</button>
+        <div class="jigsaw-tools-wrap">
+          <button id="jigsawToolsBtn" class="btn subtle" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="jigsawToolsPanel">🛠 Tools</button>
+          <section id="jigsawToolsPanel" class="jigsaw-tools-panel" role="dialog" aria-label="Puzzle tools" hidden></section>
+        </div>
         <div class="camera-controls" aria-label="Workspace view controls">
           <button id="jigsawZoomOutBtn" class="btn subtle" title="Zoom out" aria-label="Zoom out">−</button>
           <button id="jigsawZoomInBtn" class="btn subtle" title="Zoom in" aria-label="Zoom in">+</button>

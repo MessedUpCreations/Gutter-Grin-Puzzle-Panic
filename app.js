@@ -51,6 +51,13 @@ const JIGSAW_DIFFICULTIES = {
   ] } },
 };
 
+const JIGSAW_TOOLS = Object.freeze({
+  hint: { label: 'Hint', icon: '💡', cost: 2, counter: 'hints', description: 'Briefly show where a piece belongs.' },
+  backgroundReveal: { label: 'Background Reveal', icon: '👁', cost: 3, counter: 'backgroundReveals', description: 'Show the completed image beneath the puzzle for 10 seconds.' },
+  edgeFinder: { label: 'Edge Finder', icon: '🧩', cost: 5, counter: 'edgeFinders', description: 'Highlight loose outside-edge pieces for 15 seconds.' },
+  autoPlace: { label: 'Auto-Place', icon: '✨', cost: 10, counter: 'autoPlaces', description: 'Correctly place one random loose piece.' },
+});
+
 const GAME_MODES = {
   swap: { label: 'Swap Puzzle', icon: '⇄', description: 'Swap scrambled tiles until the artwork is back where it belongs.', difficulties: SWAP_DIFFICULTIES },
   jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
@@ -364,6 +371,93 @@ function enterApp() {
 
 function updateWallet() {
   $('#coinCount').textContent = Number(state.coins || 0).toLocaleString();
+  const toolsBalance = $('#jigsawToolsBalance');
+  if (toolsBalance) toolsBalance.textContent = Number(state.coins || 0).toLocaleString();
+}
+
+function renderJigsawToolsPanel() {
+  const panel = $('#jigsawToolsPanel');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="tools-panel-head"><h2>PUZZLE TOOLS</h2><p>Your Coins: <span id="jigsawToolsBalance">${Number(state.coins || 0).toLocaleString()}</span></p></div>
+    ${Object.entries(JIGSAW_TOOLS).map(([id, tool]) => `
+      <button class="tool-option" type="button" data-jigsaw-tool="${id}" aria-label="Use ${tool.label} for ${tool.cost} coins">
+        <span aria-hidden="true">${tool.icon}</span><span><strong>${tool.label}</strong><small>${tool.description}</small></span><b>${tool.cost} coins</b>
+      </button>`).join('')}`;
+  panel.querySelectorAll('[data-jigsaw-tool]').forEach((button) => button.addEventListener('click', () => requestJigsawTool(button.dataset.jigsawTool)));
+}
+
+function setJigsawToolsPanel(open) {
+  const panel = $('#jigsawToolsPanel');
+  const button = $('#jigsawToolsBtn');
+  if (!panel || !button) return;
+  panel.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  if (open) { renderJigsawToolsPanel(); panel.querySelector('.tool-option')?.focus(); }
+}
+
+function closeJigsawToolsPanel() {
+  setJigsawToolsPanel(false);
+}
+
+function toolFailureMessage(reason) {
+  const messages = {
+    completed: 'Puzzle tools are unavailable after completion.',
+    previewing: 'Wait for the preview to finish before using a tool.',
+    hintActive: 'Select a piece or cancel the current Hint first.',
+    backgroundActive: 'Background Reveal is already active.',
+    noLoosePieces: 'No loose pieces are available for a Hint.',
+    noEdgePieces: 'All outside-edge pieces are already placed.',
+    noSingletons: 'No individual loose pieces are available to auto-place.',
+  };
+  return messages[reason] || 'That tool cannot be used right now.';
+}
+
+function requestJigsawTool(toolId) {
+  const tool = JIGSAW_TOOLS[toolId];
+  const engine = jigsawGame instanceof JigsawEngine ? jigsawGame : null;
+  if (!tool || !engine || !jigsawScreen.classList.contains('active')) return;
+  const unavailable = engine.toolUnavailableReason(toolId);
+  if (unavailable) { closeJigsawToolsPanel(); return showToast(toolFailureMessage(unavailable)); }
+  if (state.coins < tool.cost) {
+    closeJigsawToolsPanel();
+    return showModal('Not Enough Coins', `Need ${tool.cost} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
+  }
+  closeJigsawToolsPanel();
+  showModal(`Use ${tool.label}?`, `Use ${tool.label} for ${tool.cost} coins?`, [
+    { label: 'Cancel' },
+    { label: 'Use Tool', primary: true, action: () => activateJigsawTool(toolId) },
+  ], tool.icon);
+}
+
+function activateJigsawTool(toolId) {
+  const tool = JIGSAW_TOOLS[toolId];
+  const engine = jigsawGame instanceof JigsawEngine ? jigsawGame : null;
+  if (!tool || !engine || engine.completed) return;
+  const unavailable = engine.toolUnavailableReason(toolId);
+  if (unavailable) return showToast(toolFailureMessage(unavailable));
+  if (state.coins < tool.cost) return showModal('Not Enough Coins', `Need ${tool.cost} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
+  if (toolId === 'hint') return engine.beginHintSelection();
+  if (!engine.activateTool(toolId)) return;
+  completeJigsawToolPurchase(engine, toolId);
+}
+
+function completeJigsawToolPurchase(engine, toolId) {
+  const tool = JIGSAW_TOOLS[toolId];
+  if (!tool || engine.completed || state.coins < tool.cost) return false;
+  state.coins -= tool.cost;
+  engine.assisted = true;
+  engine.toolsUsed[tool.counter] += 1;
+  engine.coinsSpentOnTools += tool.cost;
+  if (engine.placed === engine.pieceCount) {
+    updateWallet();
+    finishJigsaw(engine);
+    return true;
+  }
+  saveState();
+  scheduleActiveJigsawSave(engine);
+  updateWallet();
+  return true;
 }
 
 function navigate(view) {
@@ -812,6 +906,10 @@ async function startJigsaw(resumeSave = null) {
   $('#jigsawDifficultyText').textContent = `${jigsawGame.config.label} · ${jigsawGame.pieceCount.toLocaleString()} pieces`;
   $('#jigsawPlacedText').textContent = `0 / ${jigsawGame.pieceCount.toLocaleString()}`;
   $('#jigsawMoveText').textContent = '0';
+  closeJigsawToolsPanel();
+  $('#jigsawToolsBtn').disabled = false;
+  $('#jigsawToolStatus').hidden = true;
+  jigsawScreen.classList.remove('hint-selecting');
   showScreen(jigsawScreen);
   jigsawGame.start();
   startButton.disabled = false; startButton.textContent = 'Start Puzzle';
@@ -837,6 +935,8 @@ function jigsawTimeBonus(difficulty, seconds) {
 function finishJigsaw(engine) {
   if (jigsawGame !== engine || engine.completed) return;
   engine.completed = true;
+  closeJigsawToolsPanel();
+  $('#jigsawToolsBtn').disabled = true;
   engine.stopTimer();
   engine.renderCompleted();
   const seconds = engine.seconds;
@@ -849,6 +949,9 @@ function finishJigsaw(engine) {
     bestSeconds: Number.isFinite(prior?.bestSeconds) ? Math.min(prior.bestSeconds, seconds) : seconds,
     bestMoves: Number.isFinite(prior?.bestMoves) ? Math.min(prior.bestMoves, engine.moves) : engine.moves,
     clears: (prior?.clears || 0) + 1,
+    assisted: engine.assisted,
+    toolsUsed: { ...engine.toolsUsed },
+    coinsSpentOnTools: engine.coinsSpentOnTools,
   };
   state.coins += reward;
   state.totalMoves = (state.totalMoves || 0) + engine.moves;
@@ -906,6 +1009,15 @@ class JigsawEngine {
     this.startedAt = 0;
     this.completed = false;
     this.previewing = false;
+    this.assisted = false;
+    this.toolsUsed = { hints: 0, backgroundReveals: 0, edgeFinders: 0, autoPlaces: 0 };
+    this.coinsSpentOnTools = 0;
+    this.hintSelectionActive = false;
+    this.hintTarget = null;
+    this.backgroundRevealUntil = 0;
+    this.edgeFinderUntil = 0;
+    this.autoPlacePulse = null;
+    this.effectTimers = new Set();
     this.framePending = false;
     this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
     this.metrics = { geometryMs: 0, setupMs: 0, firstRenderMs: null };
@@ -1028,7 +1140,8 @@ class JigsawEngine {
           left: col === 0 ? 0 : -vertical[row][col - 1],
         };
         const tabDepth = Math.min(width, this.pieceHeight) * (0.17 + ((id % 3) * 0.018));
-        const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id };
+        const piece = { id, row, col, targetX, targetY, width, tabDepth, x: 0, y: 0, edges, placed: false, groupId: id,
+          isExterior: row === 0 || row === this.rows - 1 || col === 0 || col === count - 1 };
         this.finishPieceRecord(piece);
         id += 1;
       }
@@ -1047,6 +1160,7 @@ class JigsawEngine {
         targetX: this.board.x + col * width,
         targetY: this.board.y + row * this.pieceHeight,
         x: 0, y: 0, placed: false, groupId: id,
+        isExterior: row === 0 || row === this.rows - 1 || col === 0 || col === this.cols - 1,
         edges: {
           top: row === 0 ? 0 : -horizontal[row - 1][col],
           right: col === this.cols - 1 ? 0 : vertical[row][col],
@@ -1265,6 +1379,9 @@ class JigsawEngine {
     return {
       v: 1, mode: 'jigsaw', puzzleId: this.puzzle.id, difficulty: this.difficulty,
       seed: this.seed, elapsedSeconds, moves: this.moves, placed: this.placed,
+      assisted: this.assisted,
+      toolsUsed: { ...this.toolsUsed },
+      coinsSpentOnTools: this.coinsSpentOnTools,
       world: [this.worldWidth, this.worldHeight],
       camera: [this.camera.x, this.camera.y, this.camera.zoom],
       drawOrder: [...this.drawOrder],
@@ -1286,6 +1403,9 @@ class JigsawEngine {
     this.camera = { x: save.camera[0], y: save.camera[1], zoom: save.camera[2] };
     this.moves = Number(save.moves || 0);
     this.placed = this.pieces.filter((piece) => piece.placed).length;
+    this.assisted = !!save.assisted;
+    Object.keys(this.toolsUsed).forEach((key) => { this.toolsUsed[key] = Math.max(0, Number(save.toolsUsed?.[key] || 0)); });
+    this.coinsSpentOnTools = Math.max(0, Number(save.coinsSpentOnTools || 0));
     this.elapsedBase = Number(save.elapsedSeconds || 0);
     this.seconds = this.elapsedBase;
     $('#jigsawTimerText').textContent = formatTime(this.seconds);
@@ -1445,33 +1565,132 @@ class JigsawEngine {
     this.applyDefaultWorkingView();
   }
 
+  toolUnavailableReason(toolId) {
+    if (this.completed) return 'completed';
+    if (this.previewing) return 'previewing';
+    if (this.hintSelectionActive) return 'hintActive';
+    if (toolId === 'hint' && !this.pieces.some((piece) => !piece.placed)) return 'noLoosePieces';
+    if (toolId === 'backgroundReveal' && this.backgroundRevealUntil > performance.now()) return 'backgroundActive';
+    if (toolId === 'edgeFinder' && !this.pieces.some((piece) => piece.isExterior && !piece.placed)) return 'noEdgePieces';
+    if (toolId === 'autoPlace' && !this.singletonLoosePieces().length) return 'noSingletons';
+    return null;
+  }
+
+  singletonLoosePieces() {
+    return this.pieces.filter((piece) => !piece.placed && this.groups.get(piece.groupId)?.size === 1);
+  }
+
+  beginHintSelection() {
+    if (this.toolUnavailableReason('hint')) return false;
+    this.hintSelectionActive = true;
+    jigsawScreen.classList.add('hint-selecting');
+    $('#jigsawToolStatus').hidden = false;
+    this.canvas.focus({ preventScroll: true });
+    return true;
+  }
+
+  cancelHintSelection(notify = true) {
+    if (!this.hintSelectionActive) return false;
+    this.hintSelectionActive = false;
+    jigsawScreen.classList.remove('hint-selecting');
+    $('#jigsawToolStatus').hidden = true;
+    if (notify) showToast('Hint cancelled · no coins spent');
+    return true;
+  }
+
+  setTimedEffect(property, value, duration) {
+    this[property] = value;
+    this.requestRender();
+    const timer = setTimeout(() => {
+      this.effectTimers.delete(timer);
+      if (this[property] === value) this[property] = property.endsWith('Until') ? 0 : null;
+      this.requestRender();
+    }, duration + 40);
+    this.effectTimers.add(timer);
+  }
+
+  activateHintForPiece(piece) {
+    if (!this.hintSelectionActive || !piece || piece.placed) return false;
+    if (!completeJigsawToolPurchase(this, 'hint')) return false;
+    this.cancelHintSelection(false);
+    const effect = { pieceId: piece.id, until: performance.now() + 4800 };
+    this.setTimedEffect('hintTarget', effect, 4800);
+    showToast('Hint activated');
+    return true;
+  }
+
+  activateTool(toolId) {
+    if (this.toolUnavailableReason(toolId)) return false;
+    if (toolId === 'backgroundReveal') {
+      const until = performance.now() + 10000;
+      this.setTimedEffect('backgroundRevealUntil', until, 10000);
+      showToast('Background revealed for 10 seconds');
+      return true;
+    }
+    if (toolId === 'edgeFinder') {
+      const until = performance.now() + 15000;
+      this.setTimedEffect('edgeFinderUntil', until, 15000);
+      showToast('Loose edge pieces highlighted for 15 seconds');
+      return true;
+    }
+    if (toolId === 'autoPlace') {
+      const candidates = this.singletonLoosePieces();
+      if (!candidates.length) return false;
+      const piece = candidates[Math.floor(Math.random() * candidates.length)];
+      piece.x = piece.targetX;
+      piece.y = piece.targetY;
+      if (!this.tryPlaceGroup(piece.groupId)) return false;
+      const effect = { pieceId: piece.id, until: performance.now() + 900 };
+      this.setTimedEffect('autoPlacePulse', effect, 900);
+      this.bringGroupToFront(piece.groupId);
+      this.rebuildSpatialIndex();
+      this.requestRender();
+      showToast('One piece auto-placed');
+      return true;
+    }
+    return false;
+  }
+
+  hitTestLoosePiece(point) {
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const hitOrder = this.hitTestOrder(point);
+    for (let index = hitOrder.length - 1; index >= 0; index -= 1) {
+      const piece = this.pieces[hitOrder[index]];
+      if (piece.placed) continue;
+      const bounds = this.pieceWorldBounds(piece);
+      if (point.x < bounds.minX || point.x > bounds.maxX || point.y < bounds.minY || point.y > bounds.maxY) continue;
+      const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
+      if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) return piece;
+    }
+    return null;
+  }
+
   pointerDown(event) {
     if (this.completed || this.previewing) return;
     this.canvas.focus({ preventScroll: true });
     const screenPoint = this.canvasScreenPoint(event);
+    const point = this.screenToWorld(screenPoint);
+    if (this.hintSelectionActive) {
+      event.preventDefault();
+      const piece = this.hitTestLoosePiece(point);
+      if (piece) this.activateHintForPiece(piece);
+      else showToast('Select an unlocked loose piece · no coins spent');
+      return;
+    }
     this.activePointers.set(event.pointerId, screenPoint);
     this.canvas.setPointerCapture(event.pointerId);
     if (this.activePointers.size >= 2) { this.beginPinch(); return; }
-    const point = this.screenToWorld(screenPoint);
     const forcePan = event.button === 1 || this.spacePressed;
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (!forcePan) {
-      const hitOrder = this.hitTestOrder(point);
-      for (let index = hitOrder.length - 1; index >= 0; index -= 1) {
-        const piece = this.pieces[hitOrder[index]];
-        if (piece.placed) continue;
-        const bounds = this.pieceWorldBounds(piece);
-        if (point.x < bounds.minX || point.x > bounds.maxX || point.y < bounds.minY || point.y > bounds.maxY) continue;
-        const dx = piece.x - piece.targetX, dy = piece.y - piece.targetY;
-        if (this.ctx.isPointInPath(piece.path, point.x - dx, point.y - dy)) {
-          const groupId = piece.groupId;
-          const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
-          this.drag = { pointerId: event.pointerId, piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startScreen: screenPoint, moved: false };
-          this.bringGroupToFront(groupId);
-          this.canvas.style.cursor = 'grabbing';
-          this.requestRender();
-          return;
-        }
+      const piece = this.hitTestLoosePiece(point);
+      if (piece) {
+        const groupId = piece.groupId;
+        const startPositions = new Map(this.groupMembers(groupId).map((member) => [member.id, { x: member.x, y: member.y }]));
+        this.drag = { pointerId: event.pointerId, piece, groupId, startPositions, offsetX: point.x - piece.x, offsetY: point.y - piece.y, startScreen: screenPoint, moved: false };
+        this.bringGroupToFront(groupId);
+        this.canvas.style.cursor = 'grabbing';
+        this.requestRender();
+        return;
       }
     }
     this.pan = { pointerId: event.pointerId, startScreen: screenPoint, startCamera: { x: this.camera.x, y: this.camera.y } };
@@ -1736,6 +1955,12 @@ class JigsawEngine {
       ctx.restore();
       return;
     }
+    if (this.backgroundRevealUntil > performance.now()) {
+      ctx.save();
+      ctx.globalAlpha = .28;
+      ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
+      ctx.restore();
+    }
     const visible = this.visibleWorldBounds(36 / this.camera.zoom);
     this.lastRenderedPieceCount = 0;
     this.drawOrder.forEach((id) => {
@@ -1745,8 +1970,27 @@ class JigsawEngine {
       this.drawPiece(piece);
       this.lastRenderedPieceCount += 1;
     });
+    if (this.hintTarget?.until > performance.now()) this.drawTargetPulse(this.pieces[this.hintTarget.pieceId], this.hintTarget.until, '#ffd84a');
+    if (this.autoPlacePulse?.until > performance.now()) this.drawTargetPulse(this.pieces[this.autoPlacePulse.pieceId], this.autoPlacePulse.until, '#b9ff36');
     ctx.restore();
+    if (this.hintTarget?.until > performance.now() || this.autoPlacePulse?.until > performance.now()) this.requestRender();
     if (this.metrics.firstRenderMs === null && this.firstRenderStartedAt) this.metrics.firstRenderMs = performance.now() - this.firstRenderStartedAt;
+  }
+
+  drawTargetPulse(piece, until, color) {
+    if (!piece) return;
+    const remaining = Math.max(0, until - performance.now());
+    const pulse = .55 + Math.sin(remaining / 120) * .25;
+    this.ctx.save();
+    this.ctx.globalAlpha = pulse;
+    this.ctx.fillStyle = `${color}33`;
+    this.ctx.strokeStyle = color;
+    this.ctx.shadowColor = color;
+    this.ctx.shadowBlur = 18 / this.camera.zoom;
+    this.ctx.lineWidth = 7 / this.camera.zoom;
+    this.ctx.fill(piece.path);
+    this.ctx.stroke(piece.path);
+    this.ctx.restore();
   }
 
   drawPiece(piece) {
@@ -1758,12 +2002,14 @@ class JigsawEngine {
     ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
     ctx.restore();
     const connecting = (piece.connectedPulseUntil || 0) > performance.now();
-    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : connecting ? '#b9ff36' : 'rgba(255,255,255,.72)';
-    ctx.lineWidth = (connecting ? 4 : piece.placed ? 1.5 : 2.2) / this.camera.zoom; ctx.stroke(piece.path); ctx.restore();
+    const edgeHighlighted = !piece.placed && piece.isExterior && this.edgeFinderUntil > performance.now();
+    if (edgeHighlighted) { ctx.shadowColor = '#55dfff'; ctx.shadowBlur = 18 / this.camera.zoom; }
+    ctx.strokeStyle = piece.placed ? 'rgba(185,255,54,.65)' : connecting ? '#b9ff36' : edgeHighlighted ? '#55dfff' : 'rgba(255,255,255,.72)';
+    ctx.lineWidth = (connecting || edgeHighlighted ? 4 : piece.placed ? 1.5 : 2.2) / this.camera.zoom; ctx.stroke(piece.path); ctx.restore();
   }
 
   preview() {
-    if (this.completed || this.previewing) return;
+    if (this.completed || this.previewing || this.hintSelectionActive) return;
     this.previewing = true; jigsawScreen.classList.add('previewing'); this.requestRender();
     clearTimeout(this.previewTimer);
     this.previewTimer = setTimeout(() => { this.previewing = false; jigsawScreen.classList.remove('previewing'); this.requestRender(); }, 1800);
@@ -1777,6 +2023,8 @@ class JigsawEngine {
   }
   destroy() {
     clearInterval(this.timer); clearInterval(this.checkpointTimer); clearTimeout(this.previewTimer); this.resizeObserver.disconnect();
+    this.effectTimers.forEach((timer) => clearTimeout(timer)); this.effectTimers.clear();
+    this.cancelHintSelection(false); closeJigsawToolsPanel();
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
@@ -2056,6 +2304,8 @@ $('#jigsawPrepBackBtn').addEventListener('click', () => {
 $('#startJigsawBtn').addEventListener('click', () => startJigsaw());
 $('#jigsawPreviewBtn').addEventListener('click', () => jigsawGame?.preview?.());
 $('#gatherJigsawBtn').addEventListener('click', () => jigsawGame?.gatherLoosePieces?.());
+$('#jigsawToolsBtn').addEventListener('click', () => setJigsawToolsPanel($('#jigsawToolsPanel').hidden));
+$('#cancelJigsawToolBtn').addEventListener('click', () => jigsawGame?.cancelHintSelection?.());
 $('#jigsawZoomOutBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1 / 1.25));
 $('#jigsawZoomInBtn').addEventListener('click', () => jigsawGame?.zoomBy?.(1.25));
 $('#jigsawFitBtn').addEventListener('click', () => jigsawGame?.fitBoard?.());
@@ -2074,8 +2324,17 @@ $('#exitJigsawBtn').addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#modalBackdrop').hidden) {
+    e.preventDefault();
+    $('#modalBackdrop').hidden = true;
+    return;
+  }
   if (gameScreen.classList.contains('active') && e.key === 'Escape') $('#exitGameBtn').click();
-  if (jigsawScreen.classList.contains('active') && e.key === 'Escape') $('#exitJigsawBtn').click();
+  if (jigsawScreen.classList.contains('active') && e.key === 'Escape') {
+    if (jigsawGame?.hintSelectionActive) { e.preventDefault(); jigsawGame.cancelHintSelection(); }
+    else if (!$('#jigsawToolsPanel').hidden) { e.preventDefault(); closeJigsawToolsPanel(); $('#jigsawToolsBtn').focus(); }
+    else $('#exitJigsawBtn').click();
+  }
 });
 window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); });
 
