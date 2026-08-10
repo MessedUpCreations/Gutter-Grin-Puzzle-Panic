@@ -58,6 +58,71 @@ const JIGSAW_TOOLS = Object.freeze({
   autoPlace: { label: 'Auto-Place', icon: '✨', cost: 10, counter: 'autoPlaces', description: 'Correctly place one random loose piece.' },
 });
 
+const DAILY_CHALLENGE = Object.freeze({
+  bonusCoins: 25,
+  puzzleIds: Object.freeze([
+    'smooch-mode', 'cat-mode', 'yas-queens', 'damn-that-raccoon', 'gutter-grin',
+    'raccoon-campfire', 'raccoon-dumpster-fire', 'raccoon-goes-camping', 'raccoon-grocery-run', 'raccoon-pirate-adventure',
+    'disco-apocalypse', 'groovy-shrooms', 'groovy-van-vibes', 'groovy-shrooms-2', 'groovy-van-2',
+    'blacksmith-working', 'dragon-castle', 'dwarven-pub', 'miners-haven', 'overcast-forest',
+  ]),
+  difficultySlots: Object.freeze(['easy', 'easy', 'normal', 'normal', 'hard']),
+});
+
+const DEFAULT_DAILY_CHALLENGE_STATS = Object.freeze({
+  lastCompletedDate: null,
+  currentStreak: 0,
+  longestStreak: 0,
+  totalCompletions: 0,
+  fastestSeconds: null,
+  fastestPuzzleId: null,
+  fastestDifficulty: null,
+});
+
+function utcDateKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function adjacentUtcDateKey(dateKey, offsetDays) {
+  const date = new Date(`${dateKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return utcDateKey(date);
+}
+
+function stableDailyHash(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function dailyChallengeForDate(dateOrKey = new Date()) {
+  const dateKey = typeof dateOrKey === 'string' ? dateOrKey : utcDateKey(dateOrKey);
+  const pool = DAILY_CHALLENGE.puzzleIds;
+  const utcDayNumber = Math.floor(Date.parse(`${dateKey}T00:00:00.000Z`) / 86400000);
+  // Seven is coprime with the 20-item pool, producing a stable full rotation with no consecutive duplicates.
+  const puzzleIndex = (stableDailyHash('gutter-grin:daily:puzzle:v1') + utcDayNumber * 7) % pool.length;
+  const difficulty = DAILY_CHALLENGE.difficultySlots[
+    stableDailyHash(`gutter-grin:daily:difficulty:${dateKey}`) % DAILY_CHALLENGE.difficultySlots.length
+  ];
+  return { dateKey, puzzleId: pool[puzzleIndex], difficulty };
+}
+
+function normalizeDailyChallengeStats(value) {
+  const stats = value && typeof value === 'object' ? value : {};
+  return {
+    lastCompletedDate: typeof stats.lastCompletedDate === 'string' ? stats.lastCompletedDate : null,
+    currentStreak: Math.max(0, Number(stats.currentStreak || 0)),
+    longestStreak: Math.max(0, Number(stats.longestStreak || 0)),
+    totalCompletions: Math.max(0, Number(stats.totalCompletions || 0)),
+    fastestSeconds: Number.isFinite(stats.fastestSeconds) && stats.fastestSeconds > 0 ? stats.fastestSeconds : null,
+    fastestPuzzleId: typeof stats.fastestPuzzleId === 'string' ? stats.fastestPuzzleId : null,
+    fastestDifficulty: ['easy', 'normal', 'hard'].includes(stats.fastestDifficulty) ? stats.fastestDifficulty : null,
+  };
+}
+
 const GAME_MODES = {
   swap: { label: 'Swap Puzzle', icon: '⇄', description: 'Swap scrambled tiles until the artwork is back where it belongs.', difficulties: SWAP_DIFFICULTIES },
   jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
@@ -75,6 +140,7 @@ const defaultState = {
   totalMoves: 0,
   totalSeconds: 0,
   puzzlesCompleted: 0,
+  dailyChallengeStats: { ...DEFAULT_DAILY_CHALLENGE_STATS },
 };
 
 let state = loadState();
@@ -224,6 +290,7 @@ function getCloudSavePayload() {
     totalMoves: Number(state.totalMoves || 0),
     totalSeconds: Number(state.totalSeconds || 0),
     puzzlesCompleted: Number(state.puzzlesCompleted || 0),
+    dailyChallengeStats: normalizeDailyChallengeStats(state.dailyChallengeStats),
   };
 }
 
@@ -295,6 +362,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       totalMoves: cloud.totalMoves ?? 0,
       totalSeconds: cloud.totalSeconds ?? 0,
       puzzlesCompleted: cloud.puzzlesCompleted ?? 0,
+      dailyChallengeStats: normalizeDailyChallengeStats(cloud.dailyChallengeStats),
     };
 
     saveLocalState();
@@ -310,6 +378,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     purchasedPacks: Array.isArray(localBeforeSignIn.purchasedPacks)
       ? [...localBeforeSignIn.purchasedPacks]
       : ['starter'],
+    dailyChallengeStats: normalizeDailyChallengeStats(localBeforeSignIn.dailyChallengeStats),
   };
 
   saveLocalState();
@@ -332,6 +401,7 @@ function loadState() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
     const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
     loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
+    loaded.dailyChallengeStats = normalizeDailyChallengeStats(saved?.dailyChallengeStats);
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -487,9 +557,86 @@ function completionCountForPuzzle(id, mode = 'swap') {
     : key.startsWith(`${mode}:${id}:`)).length;
 }
 
+function currentDailyChallenge(date = new Date()) {
+  const selection = dailyChallengeForDate(date);
+  return { ...selection, puzzle: PUZZLES.find((puzzle) => puzzle.id === selection.puzzleId), config: JIGSAW_DIFFICULTIES[selection.difficulty] };
+}
+
+function isTodaysDailyChallengeSave(save, challenge = currentDailyChallenge()) {
+  return validActiveJigsawSave(save) && save.dailyChallenge?.active === true
+    && save.dailyChallenge.dateKey === challenge.dateKey
+    && save.puzzleId === challenge.puzzleId
+    && save.difficulty === challenge.difficulty;
+}
+
+function normalizedDailyContext(context, puzzleId, difficulty, date = new Date()) {
+  if (!context || typeof context.dateKey !== 'string') return null;
+  const selection = dailyChallengeForDate(context.dateKey);
+  const validIdentity = selection.puzzleId === puzzleId && selection.difficulty === difficulty;
+  return {
+    active: context.active === true && validIdentity && context.dateKey === utcDateKey(date),
+    dateKey: context.dateKey,
+  };
+}
+
+function recordDailyChallengeCompletion(engine, seconds, date = new Date()) {
+  const today = utcDateKey(date);
+  const context = normalizedDailyContext(engine.dailyChallenge, engine.puzzle.id, engine.difficulty, date);
+  if (!context?.active || context.dateKey !== today) return { eligible: false, firstToday: false, bonus: 0, statsChanged: false };
+
+  const stats = normalizeDailyChallengeStats(state.dailyChallengeStats);
+  const firstToday = stats.lastCompletedDate !== today;
+  let statsChanged = false;
+
+  if (firstToday) {
+    stats.currentStreak = stats.lastCompletedDate === adjacentUtcDateKey(today, -1) ? stats.currentStreak + 1 : 1;
+    stats.longestStreak = Math.max(stats.longestStreak, stats.currentStreak);
+    stats.lastCompletedDate = today;
+    stats.totalCompletions += 1;
+    statsChanged = true;
+  }
+
+  if (!Number.isFinite(stats.fastestSeconds) || seconds < stats.fastestSeconds) {
+    stats.fastestSeconds = seconds;
+    stats.fastestPuzzleId = engine.puzzle.id;
+    stats.fastestDifficulty = engine.difficulty;
+    statsChanged = true;
+  }
+
+  state.dailyChallengeStats = stats;
+  return { eligible: true, firstToday, bonus: firstToday ? DAILY_CHALLENGE.bonusCoins : 0, statsChanged };
+}
+
+function launchDailyChallenge() {
+  const challenge = currentDailyChallenge();
+  if (!challenge.puzzle || !challenge.config) return showToast('Today’s Daily Challenge is unavailable');
+  activeJigsawSave = readLocalActiveJigsaw();
+  if (isTodaysDailyChallengeSave(activeJigsawSave, challenge)) return resumeActiveJigsaw();
+
+  const prepare = async () => {
+    state.selectedMode = 'jigsaw';
+    state.difficulty = challenge.difficulty;
+    saveState();
+    showJigsawPreparation(challenge.puzzle, { dailyChallenge: { active: true, dateKey: challenge.dateKey } });
+  };
+
+  if (validActiveJigsawSave(activeJigsawSave)) {
+    return showModal('Unfinished Jigsaw', 'Continue your saved puzzle, or replace it with today’s Daily Challenge?', [
+      { label: 'Continue Existing', action: resumeActiveJigsaw },
+      { label: 'Replace With Daily Challenge', primary: true, action: async () => { await clearActiveJigsawSave(); await prepare(); } },
+    ], '📅');
+  }
+  prepare();
+}
+
 function renderHome() {
   const starterPuzzles = PUZZLES.filter((p) => p.pack === 'starter');
   const completedUnique = starterPuzzles.filter((p) => completionCountForPuzzle(p.id) > 0).length;
+  const daily = currentDailyChallenge();
+  const dailyStats = normalizeDailyChallengeStats(state.dailyChallengeStats);
+  const completedToday = dailyStats.lastCompletedDate === daily.dateKey;
+  const dailySave = readLocalActiveJigsaw();
+  const continueToday = isTodaysDailyChallengeSave(dailySave, daily);
   viewHost.innerHTML = `
     <section class="hero">
       <div class="hero-content">
@@ -503,6 +650,22 @@ function renderHome() {
       </div>
     </section>
 
+    <section class="daily-challenge-card ${completedToday ? 'completed' : ''}">
+      <img src="${daily.puzzle.image}" alt="${escapeHtml(daily.puzzle.title)} Daily Challenge artwork" />
+      <div class="daily-challenge-copy">
+        <p class="eyebrow">DAILY CHALLENGE · ${daily.dateKey}</p>
+        <h3>${escapeHtml(daily.puzzle.title)}</h3>
+        <p>${daily.config.label} · ${daily.config.pieces.toLocaleString()} pieces</p>
+        <strong>${completedToday ? '✓ Completed Today · Daily bonus already earned' : `Daily Bonus: +${DAILY_CHALLENGE.bonusCoins} coins`}</strong>
+        <div class="daily-stats" aria-label="Daily Challenge progress">
+          <span><b>${dailyStats.currentStreak}</b><small>Current Streak</small></span>
+          <span><b>${dailyStats.longestStreak}</b><small>Longest Streak</small></span>
+          <span><b>${dailyStats.totalCompletions}</b><small>Days Completed</small></span>
+        </div>
+      </div>
+      <button class="btn primary" id="dailyChallengeBtn">${continueToday ? 'Continue Challenge' : completedToday ? 'Replay Challenge' : 'Start Challenge'}</button>
+    </section>
+
     <div class="section-head">
       <div><h3>Starter Pack</h3><p>${completedUnique} of ${starterPuzzles.length} puzzles completed</p></div>
       <button class="text-btn" data-go="puzzles">See all</button>
@@ -514,6 +677,7 @@ function renderHome() {
     puzzleFlow = { step: 'mode', puzzleId: null };
     navigate('puzzles');
   });
+  $('#dailyChallengeBtn').addEventListener('click', launchDailyChallenge);
 }
 
 function puzzleCard(puzzle, context = 'select') {
@@ -599,7 +763,8 @@ function renderDifficultySelection() {
   }));
   $('#playSelectedBtn').addEventListener('click', () => {
     if (state.selectedMode === 'jigsaw') {
-      const conflicts = activeJigsawSave && (activeJigsawSave.puzzleId !== puzzle.id || activeJigsawSave.difficulty !== state.difficulty);
+      const conflicts = activeJigsawSave && (activeJigsawSave.puzzleId !== puzzle.id
+        || activeJigsawSave.difficulty !== state.difficulty || activeJigsawSave.dailyChallenge?.active === true);
       if (conflicts) return showModal('Unfinished Jigsaw', 'Continue your saved puzzle, or replace it with this new one?', [
         { label: 'Continue Existing', action: resumeActiveJigsaw },
         { label: 'Replace With New', primary: true, action: async () => { await clearActiveJigsawSave(); showJigsawPreparation(puzzle); } },
@@ -859,13 +1024,14 @@ function reshuffle() {
   renderBoard();
 }
 
-function showJigsawPreparation(puzzle) {
+function showJigsawPreparation(puzzle, options = {}) {
   clearInterval(timerHandle);
   const difficulty = JIGSAW_DIFFICULTIES[state.difficulty] ? state.difficulty : 'easy';
   const config = JIGSAW_DIFFICULTIES[difficulty];
-  jigsawGame = { puzzle, difficulty, started: false };
+  const dailyChallenge = normalizedDailyContext(options.dailyChallenge, puzzle.id, difficulty);
+  jigsawGame = { puzzle, difficulty, started: false, dailyChallenge };
   $('#jigsawPrepTitle').textContent = puzzle.title;
-  $('#jigsawPrepMode').textContent = `CLASSIC JIGSAW · ${config.label.toUpperCase()}`;
+  $('#jigsawPrepMode').textContent = dailyChallenge?.active ? `DAILY CHALLENGE · ${config.label.toUpperCase()}` : `CLASSIC JIGSAW · ${config.label.toUpperCase()}`;
   $('#jigsawPrepPieces').textContent = config.pieces.toLocaleString();
   $('#jigsawPrepReward').textContent = `+${config.reward}`;
   if (config.timeBonus.type === 'tiers') {
@@ -882,6 +1048,8 @@ function showJigsawPreparation(puzzle) {
   }
   $('#jigsawPrepImage').src = puzzle.image;
   $('#jigsawPrepImage').alt = `${puzzle.title} completed artwork`;
+  $('#jigsawDailyPrepBonus').hidden = !dailyChallenge?.active;
+  $('#jigsawDailyPrepBonus').textContent = `📅 Daily Challenge Bonus: +${DAILY_CHALLENGE.bonusCoins} coins`;
   $('#prepCoinCount').textContent = Number(state.coins || 0).toLocaleString();
   showScreen(jigsawPrepScreen);
 }
@@ -900,7 +1068,11 @@ async function startJigsaw(resumeSave = null) {
   const startButton = $('#startJigsawBtn');
   startButton.disabled = true; startButton.textContent = resumeSave ? 'Restoring Puzzle…' : 'Preparing Puzzle…';
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image, difficulty, { seed: resumeSave?.seed, resumeSave });
+  jigsawGame = new JigsawEngine($('#jigsawCanvas'), puzzle, image, difficulty, {
+    seed: resumeSave?.seed,
+    resumeSave,
+    dailyChallenge: resumeSave?.dailyChallenge || jigsawGame?.dailyChallenge,
+  });
   $('#jigsawTitle').textContent = puzzle.title;
   $('#jigsawTimerText').textContent = '00:00';
   $('#jigsawDifficultyText').textContent = `${jigsawGame.config.label} · ${jigsawGame.pieceCount.toLocaleString()} pieces`;
@@ -920,7 +1092,7 @@ async function resumeActiveJigsaw() {
   const puzzle = save && PUZZLES.find((p) => p.id === save.puzzleId);
   if (!puzzle || !validActiveJigsawSave(save)) return showToast('Saved Jigsaw is unavailable');
   state.selectedMode = 'jigsaw'; state.difficulty = save.difficulty; saveLocalState();
-  jigsawGame = { puzzle, difficulty: save.difficulty, started: false };
+  jigsawGame = { puzzle, difficulty: save.difficulty, started: false, dailyChallenge: normalizedDailyContext(save.dailyChallenge, save.puzzleId, save.difficulty) };
   await startJigsaw(save);
 }
 
@@ -942,7 +1114,8 @@ function finishJigsaw(engine) {
   const seconds = engine.seconds;
   const baseReward = engine.config.reward;
   const timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
-  const reward = baseReward + timeBonus;
+  const dailyResult = recordDailyChallengeCompletion(engine, seconds);
+  const reward = baseReward + timeBonus + dailyResult.bonus;
   const key = completionKey('jigsaw', engine.puzzle.id, engine.difficulty);
   const prior = state.completed[key];
   state.completed[key] = {
@@ -960,14 +1133,27 @@ function finishJigsaw(engine) {
   saveState();
   clearActiveJigsawSave();
   setTimeout(() => showModal(
-    'Jigsaw Complete!',
-    `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
+    dailyResult.eligible ? 'Daily Challenge Complete!' : 'Jigsaw Complete!',
+    dailyResult.eligible
+      ? `${formatTime(seconds)} · ${engine.moves} moves\nBase Reward       +${baseReward}\nTime Bonus        +${timeBonus}\nDaily Bonus       ${dailyResult.bonus ? `+${dailyResult.bonus}` : 'Already claimed'}\nTotal             +${reward}\n\n🔥 Daily Streak: ${state.dailyChallengeStats.currentStreak}`
+      : `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
     [
-      { label: 'Back to Puzzles', action: returnFromJigsaw },
-      { label: 'Play Again', primary: true, action: () => { state.difficulty = engine.difficulty; showJigsawPreparation(engine.puzzle); } },
+      { label: dailyResult.eligible ? 'Back Home' : 'Back to Puzzles', action: dailyResult.eligible ? returnFromDailyChallenge : returnFromJigsaw },
+      { label: 'Play Again', primary: true, action: () => {
+        state.difficulty = engine.difficulty;
+        showJigsawPreparation(engine.puzzle, { dailyChallenge: engine.dailyChallenge });
+      } },
     ],
     '✓'
   ), 350);
+}
+
+function returnFromDailyChallenge() {
+  jigsawGame?.destroy?.();
+  jigsawGame = null;
+  showScreen(mainScreen);
+  currentView = 'home';
+  renderView();
 }
 
 function returnFromJigsaw() {
@@ -997,6 +1183,7 @@ class JigsawEngine {
     this.seed = Number.isInteger(options.seed) ? options.seed : this.createSeed();
     this.randomState = this.seed >>> 0;
     this.resumeSave = options.resumeSave || null;
+    this.dailyChallenge = normalizedDailyContext(options.resumeSave?.dailyChallenge || options.dailyChallenge, puzzle.id, this.difficulty);
     this.pieces = [];
     this.groups = new Map();
     this.neighbors = [];
@@ -1382,6 +1569,7 @@ class JigsawEngine {
       assisted: this.assisted,
       toolsUsed: { ...this.toolsUsed },
       coinsSpentOnTools: this.coinsSpentOnTools,
+      dailyChallenge: this.dailyChallenge ? { ...this.dailyChallenge } : undefined,
       world: [this.worldWidth, this.worldHeight],
       camera: [this.camera.x, this.camera.y, this.camera.zoom],
       drawOrder: [...this.drawOrder],
