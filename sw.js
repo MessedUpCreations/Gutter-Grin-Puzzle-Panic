@@ -1,4 +1,4 @@
-const CACHE = 'gutter-grin-puzzle-panic-v18';
+const CACHE = 'gutter-grin-puzzle-panic-v19';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
   './assets/puzzles/starter/backyard-cookout.webp',

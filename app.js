@@ -79,6 +79,28 @@ const DEFAULT_DAILY_CHALLENGE_STATS = Object.freeze({
   fastestDifficulty: null,
 });
 
+const WEEKLY_CHALLENGES = Object.freeze([
+  Object.freeze({ id: 'puzzle-bender', title: 'Puzzle Bender', description: 'Complete 5 puzzles in any mode, including Daily Challenges.', icon: '🏆', reward: 100, target: 5, unit: 'puzzles', progress: (weekly) => weekly.progress.puzzleCompletions, complete: (weekly) => weekly.progress.puzzleCompletions >= 5 }),
+  Object.freeze({ id: 'jigsaw-junkie', title: 'Jigsaw Junkie', description: 'Legitimately place 1,000 Jigsaw pieces.', icon: '🧩', reward: 100, target: 1000, unit: 'pieces', progress: (weekly) => weekly.progress.jigsawPiecesPlaced, complete: (weekly) => weekly.progress.jigsawPiecesPlaced >= 1000 }),
+  Object.freeze({ id: 'hard-headed-week', title: 'Hard-Headed Week', description: 'Complete 3 Jigsaws, with at least one on Hard difficulty.', icon: '🤕', reward: 125, target: 3, unit: 'Jigsaws', progress: (weekly) => weekly.progress.jigsawCompletions, complete: (weekly) => weekly.progress.jigsawCompletions >= 3 && weekly.progress.hardCompletions >= 1 }),
+  Object.freeze({ id: 'daily-degenerate', title: 'Daily Degenerate', description: 'Complete the Daily Challenge on 3 different days.', icon: '📅', reward: 125, target: 3, unit: 'days', progress: (weekly) => weekly.progress.dailyChallengeDays.length, complete: (weekly) => weekly.progress.dailyChallengeDays.length >= 3 }),
+]);
+
+const DEFAULT_WEEKLY_PROGRESS = Object.freeze({
+  puzzleCompletions: 0,
+  jigsawPiecesPlaced: 0,
+  jigsawCompletions: 0,
+  hardCompletions: 0,
+  dailyChallengeDays: Object.freeze([]),
+});
+
+const DEFAULT_WEEKLY_CHALLENGE_STATS = Object.freeze({
+  lastCompletedWeek: null,
+  currentStreak: 0,
+  longestStreak: 0,
+  totalCompletions: 0,
+});
+
 function utcDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -89,6 +111,17 @@ function adjacentUtcDateKey(dateKey, offsetDays) {
   return utcDateKey(date);
 }
 
+function utcWeekKey(date = new Date()) {
+  const monday = new Date(date);
+  const daysSinceMonday = (monday.getUTCDay() + 6) % 7;
+  monday.setUTCDate(monday.getUTCDate() - daysSinceMonday);
+  return utcDateKey(monday);
+}
+
+function adjacentUtcWeekKey(weekKey, offsetWeeks) {
+  return adjacentUtcDateKey(weekKey, offsetWeeks * 7);
+}
+
 function stableDailyHash(value) {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -96,6 +129,43 @@ function stableDailyHash(value) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function weeklyChallengeForWeek(dateOrKey = new Date()) {
+  const weekKey = typeof dateOrKey === 'string' ? dateOrKey : utcWeekKey(dateOrKey);
+  const utcWeekNumber = Math.floor(Date.parse(`${weekKey}T00:00:00.000Z`) / 604800000);
+  const index = (stableDailyHash('gutter-grin:weekly:v1') + utcWeekNumber) % WEEKLY_CHALLENGES.length;
+  return { weekKey, challenge: WEEKLY_CHALLENGES[index] };
+}
+
+function normalizeWeeklyChallenge(value) {
+  const weekly = value && typeof value === 'object' ? value : {};
+  const progress = weekly.progress && typeof weekly.progress === 'object' ? weekly.progress : {};
+  return {
+    weekKey: typeof weekly.weekKey === 'string' ? weekly.weekKey : null,
+    challengeId: typeof weekly.challengeId === 'string' ? weekly.challengeId : null,
+    progress: {
+      puzzleCompletions: Math.max(0, Number(progress.puzzleCompletions || 0)),
+      jigsawPiecesPlaced: Math.max(0, Number(progress.jigsawPiecesPlaced || 0)),
+      jigsawCompletions: Math.max(0, Number(progress.jigsawCompletions || 0)),
+      hardCompletions: Math.max(0, Number(progress.hardCompletions || 0)),
+      dailyChallengeDays: Array.isArray(progress.dailyChallengeDays)
+        ? [...new Set(progress.dailyChallengeDays.filter((dateKey) => typeof dateKey === 'string'))]
+        : [],
+    },
+    completed: weekly.completed === true,
+    rewardClaimed: weekly.rewardClaimed === true,
+  };
+}
+
+function normalizeWeeklyChallengeStats(value) {
+  const stats = value && typeof value === 'object' ? value : {};
+  return {
+    lastCompletedWeek: typeof stats.lastCompletedWeek === 'string' ? stats.lastCompletedWeek : null,
+    currentStreak: Math.max(0, Number(stats.currentStreak || 0)),
+    longestStreak: Math.max(0, Number(stats.longestStreak || 0)),
+    totalCompletions: Math.max(0, Number(stats.totalCompletions || 0)),
+  };
 }
 
 function dailyChallengeForDate(dateOrKey = new Date()) {
@@ -193,6 +263,9 @@ const ACHIEVEMENTS = Object.freeze([
   { id: 'three-day-bender', title: 'Three-Day Bender', description: 'Reach a 3-day Daily Challenge streak.', category: 'daily', icon: '🔥', target: 3, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).longestStreak },
   { id: 'week-long-problem', title: 'Week-Long Problem', description: 'Reach a 7-day Daily Challenge streak.', category: 'daily', icon: '🔥', target: 7, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).longestStreak },
   { id: 'habit-forming', title: 'Habit Forming', description: 'Complete 30 Daily Challenges.', category: 'daily', icon: '🗓️', target: 30, unit: 'days', progress: () => normalizeDailyChallengeStats(state.dailyChallengeStats).totalCompletions },
+  { id: 'weekend-warrior', title: 'Weekend Warrior', description: 'Complete your first Weekly Challenge.', category: 'daily', icon: '📆', target: 1, unit: 'weeks', progress: () => normalizeWeeklyChallengeStats(state.weeklyChallengeStats).totalCompletions },
+  { id: 'four-week-bender', title: 'Four-Week Bender', description: 'Reach a 4-week Weekly Challenge streak.', category: 'daily', icon: '🔥', target: 4, unit: 'weeks', progress: () => normalizeWeeklyChallengeStats(state.weeklyChallengeStats).longestStreak },
+  { id: 'serial-offender', title: 'Serial Offender', description: 'Complete 12 Weekly Challenges.', category: 'daily', icon: '📋', target: 12, unit: 'weeks', progress: () => normalizeWeeklyChallengeStats(state.weeklyChallengeStats).totalCompletions },
   { id: 'dumpster-diver', title: 'Dumpster Diver', description: 'Complete every Raccoon Adventures puzzle.', category: 'collections', icon: '🦝', target: 5, unit: 'puzzles', progress: () => packCompletionCount('raccoon-adventures') },
   { id: 'groovy-baby', title: 'Groovy, Baby', description: "Complete every Wild n' Groovy puzzle.", category: 'collections', icon: '🪩', target: 5, unit: 'puzzles', progress: () => packCompletionCount('wild-n-groovy') },
   { id: 'quest-complete', title: 'Quest Complete', description: 'Complete every Epic Fantasy puzzle.', category: 'collections', icon: '🐉', target: 5, unit: 'puzzles', progress: () => packCompletionCount('epic-fantasy') },
@@ -219,6 +292,8 @@ const defaultState = {
   totalSeconds: 0,
   puzzlesCompleted: 0,
   dailyChallengeStats: { ...DEFAULT_DAILY_CHALLENGE_STATS },
+  weeklyChallenge: null,
+  weeklyChallengeStats: { ...DEFAULT_WEEKLY_CHALLENGE_STATS },
   lifetimeStats: { totalJigsawPiecesPlaced: 0, toolsUsedLifetime: { ...DEFAULT_LIFETIME_STATS.toolsUsedLifetime } },
   achievements: { unlocked: {} },
 };
@@ -237,6 +312,72 @@ let jigsawCloudSaveTimer = null;
 let playerProgressCloudSaveTimer = null;
 const achievementNotificationQueue = [];
 let achievementNotificationActive = false;
+
+function ensureWeeklyChallenge(date = new Date()) {
+  const selection = weeklyChallengeForWeek(date);
+  const weekly = normalizeWeeklyChallenge(state.weeklyChallenge);
+  state.weeklyChallengeStats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
+  if (weekly.weekKey === selection.weekKey && weekly.challengeId === selection.challenge.id) {
+    state.weeklyChallenge = weekly;
+    return false;
+  }
+  if (state.weeklyChallengeStats.lastCompletedWeek
+      && state.weeklyChallengeStats.lastCompletedWeek !== adjacentUtcWeekKey(selection.weekKey, -1)) {
+    state.weeklyChallengeStats.currentStreak = 0;
+  }
+  state.weeklyChallenge = {
+    weekKey: selection.weekKey,
+    challengeId: selection.challenge.id,
+    progress: structuredClone(DEFAULT_WEEKLY_PROGRESS),
+    completed: false,
+    rewardClaimed: false,
+  };
+  return true;
+}
+
+function currentWeeklyChallenge(date = new Date()) {
+  ensureWeeklyChallenge(date);
+  return WEEKLY_CHALLENGES.find((challenge) => challenge.id === state.weeklyChallenge.challengeId);
+}
+
+function evaluateWeeklyChallenge(date = new Date()) {
+  const challenge = currentWeeklyChallenge(date);
+  const weekly = state.weeklyChallenge;
+  if (!challenge || weekly.rewardClaimed || !challenge.complete(weekly)) return false;
+  weekly.completed = true;
+  weekly.rewardClaimed = true;
+  state.coins += challenge.reward;
+  const stats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
+  stats.currentStreak = stats.lastCompletedWeek === adjacentUtcWeekKey(weekly.weekKey, -1) ? stats.currentStreak + 1 : 1;
+  stats.longestStreak = Math.max(stats.longestStreak, stats.currentStreak);
+  stats.lastCompletedWeek = weekly.weekKey;
+  stats.totalCompletions += 1;
+  state.weeklyChallengeStats = stats;
+  evaluateAchievements();
+  saveState();
+  showWeeklyChallengeNotification(challenge, stats.currentStreak);
+  return true;
+}
+
+function recordWeeklyPuzzleCompletion(mode, difficulty, dailyDateKey = null, date = new Date()) {
+  ensureWeeklyChallenge(date);
+  const progress = state.weeklyChallenge.progress;
+  progress.puzzleCompletions += 1;
+  if (mode === 'jigsaw') {
+    progress.jigsawCompletions += 1;
+    if (difficulty === 'hard') progress.hardCompletions += 1;
+  }
+  if (dailyDateKey && utcWeekKey(new Date(`${dailyDateKey}T00:00:00.000Z`)) === state.weeklyChallenge.weekKey
+      && !progress.dailyChallengeDays.includes(dailyDateKey)) progress.dailyChallengeDays.push(dailyDateKey);
+  evaluateWeeklyChallenge(date);
+}
+
+function recordWeeklyJigsawPiecesPlaced(count, date = new Date()) {
+  if (!Number.isInteger(count) || count <= 0) return;
+  ensureWeeklyChallenge(date);
+  state.weeklyChallenge.progress.jigsawPiecesPlaced += count;
+  evaluateWeeklyChallenge(date);
+}
 
 function achievementTarget(achievement) {
   return typeof achievement.target === 'function' ? achievement.target() : achievement.target;
@@ -277,6 +418,15 @@ function showNextAchievementNotification() {
   }, 3800);
 }
 
+function showWeeklyChallengeNotification(challenge, streak) {
+  const toast = document.createElement('div');
+  toast.className = 'weekly-challenge-toast';
+  toast.setAttribute('role', 'status');
+  toast.innerHTML = `<span>${challenge.icon}</span><div><small>WEEKLY CHALLENGE COMPLETE!</small><strong>+${challenge.reward} coins</strong><p>${streak}-week streak</p></div>`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4200);
+}
+
 function schedulePlayerProgressSave() {
   saveLocalState();
   if (!state.profile?.uid || state.profile.provider === 'guest') return;
@@ -297,6 +447,7 @@ function recordLifetimeJigsawPiecesPlaced(count) {
   if (!Number.isInteger(count) || count <= 0) return;
   state.lifetimeStats = normalizeLifetimeStats(state.lifetimeStats);
   state.lifetimeStats.totalJigsawPiecesPlaced += count;
+  recordWeeklyJigsawPiecesPlaced(count);
   evaluateAchievements();
   schedulePlayerProgressSave();
 }
@@ -444,6 +595,8 @@ function getCloudSavePayload() {
     totalSeconds: Number(state.totalSeconds || 0),
     puzzlesCompleted: Number(state.puzzlesCompleted || 0),
     dailyChallengeStats: normalizeDailyChallengeStats(state.dailyChallengeStats),
+    weeklyChallenge: normalizeWeeklyChallenge(state.weeklyChallenge),
+    weeklyChallengeStats: normalizeWeeklyChallengeStats(state.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(state.lifetimeStats),
     achievements: normalizeAchievements(state.achievements),
   };
@@ -518,6 +671,8 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       totalSeconds: cloud.totalSeconds ?? 0,
       puzzlesCompleted: cloud.puzzlesCompleted ?? 0,
       dailyChallengeStats: normalizeDailyChallengeStats(cloud.dailyChallengeStats),
+      weeklyChallenge: normalizeWeeklyChallenge(cloud.weeklyChallenge),
+      weeklyChallengeStats: normalizeWeeklyChallengeStats(cloud.weeklyChallengeStats),
       lifetimeStats: normalizeLifetimeStats(cloud.lifetimeStats),
       achievements: normalizeAchievements(cloud.achievements),
     };
@@ -536,6 +691,8 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       ? [...localBeforeSignIn.purchasedPacks]
       : ['starter'],
     dailyChallengeStats: normalizeDailyChallengeStats(localBeforeSignIn.dailyChallengeStats),
+    weeklyChallenge: normalizeWeeklyChallenge(localBeforeSignIn.weeklyChallenge),
+    weeklyChallengeStats: normalizeWeeklyChallengeStats(localBeforeSignIn.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(localBeforeSignIn.lifetimeStats),
     achievements: normalizeAchievements(localBeforeSignIn.achievements),
   };
@@ -561,6 +718,8 @@ function loadState() {
     const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
     loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
     loaded.dailyChallengeStats = normalizeDailyChallengeStats(saved?.dailyChallengeStats);
+    loaded.weeklyChallenge = normalizeWeeklyChallenge(saved?.weeklyChallenge);
+    loaded.weeklyChallengeStats = normalizeWeeklyChallengeStats(saved?.weeklyChallengeStats);
     loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
     loaded.achievements = normalizeAchievements(saved?.achievements);
     return loaded;
@@ -791,7 +950,16 @@ function launchDailyChallenge() {
   prepare();
 }
 
+function weeklyTimeRemaining(date = new Date()) {
+  const endDateKey = adjacentUtcWeekKey(utcWeekKey(date), 1);
+  const nextMonday = new Date(`${endDateKey}T00:00:00.000Z`);
+  const days = Math.max(1, Math.ceil((nextMonday.getTime() - date.getTime()) / 86400000));
+  return `Ends Monday, ${endDateKey} UTC · ${days} day${days === 1 ? '' : 's'} remaining`;
+}
+
 function renderHome() {
+  const weeklyReset = ensureWeeklyChallenge();
+  if (weeklyReset) saveState();
   const starterPuzzles = PUZZLES.filter((p) => p.pack === 'starter');
   const completedUnique = starterPuzzles.filter((p) => completionCountForPuzzle(p.id) > 0).length;
   const daily = currentDailyChallenge();
@@ -799,6 +967,14 @@ function renderHome() {
   const completedToday = dailyStats.lastCompletedDate === daily.dateKey;
   const dailySave = readLocalActiveJigsaw();
   const continueToday = isTodaysDailyChallengeSave(dailySave, daily);
+  const weekly = state.weeklyChallenge;
+  const weeklyChallenge = currentWeeklyChallenge();
+  const weeklyStats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
+  const weeklyProgress = Math.min(weeklyChallenge.target, weeklyChallenge.progress(weekly));
+  const weeklyPercent = Math.max(0, Math.min(100, weeklyProgress / weeklyChallenge.target * 100));
+  const weeklyDetail = weeklyChallenge.id === 'hard-headed-week'
+    ? `<span>${weekly.progress.hardCompletions >= 1 ? '✓' : '○'} Hard completion required (Insane does not count as Hard)</span>`
+    : '';
   viewHost.innerHTML = `
     <section class="hero">
       <div class="hero-content">
@@ -826,6 +1002,18 @@ function renderHome() {
         </div>
       </div>
       <button class="btn primary" id="dailyChallengeBtn">${continueToday ? 'Continue Challenge' : completedToday ? 'Replay Challenge' : 'Start Challenge'}</button>
+    </section>
+
+    <section class="weekly-challenge-card ${weekly.completed ? 'completed' : ''}">
+      <div class="weekly-challenge-icon">${weeklyChallenge.icon}</div>
+      <div class="weekly-challenge-copy">
+        <p class="eyebrow">WEEKLY CHALLENGE · ${weekly.weekKey}</p>
+        <h3>${escapeHtml(weeklyChallenge.title)}</h3>
+        <p>${escapeHtml(weeklyChallenge.description)}</p>
+        <div class="weekly-progress-label"><strong>${weekly.completed ? '✓ Complete' : `${weeklyProgress.toLocaleString()} / ${weeklyChallenge.target.toLocaleString()} ${weeklyChallenge.unit}`}</strong><span>+${weeklyChallenge.reward} coins</span></div>
+        <div class="weekly-progress" role="progressbar" aria-label="${escapeHtml(weeklyChallenge.title)} progress" aria-valuemin="0" aria-valuemax="${weeklyChallenge.target}" aria-valuenow="${weeklyProgress}"><span style="width:${weeklyPercent}%"></span></div>
+        <div class="weekly-meta">${weeklyDetail}<span>${weeklyTimeRemaining()}</span><span><b>${weeklyStats.currentStreak}</b>-week streak</span></div>
+      </div>
     </section>
 
     <div class="section-head">
@@ -1004,20 +1192,22 @@ function achievementProgressLabel(achievement) {
 }
 
 function renderProfile() {
+  const weeklyReset = ensureWeeklyChallenge();
   const backfilled = evaluateAchievements({ notify: false });
-  if (backfilled.length) saveState();
+  if (weeklyReset || backfilled.length) saveState();
   const profile = state.profile || defaultState.profile;
   const signedIn = profile.provider !== 'guest';
   const providerLabel = signedIn ? `Signed In · ${capitalize(profile.provider)}` : 'Guest · saved on this device';
   const lifetime = normalizeLifetimeStats(state.lifetimeStats);
   const daily = normalizeDailyChallengeStats(state.dailyChallengeStats);
+  const weeklyStats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
   const entries = completionEntries();
   const jigsawCompletions = entries.filter(([key]) => key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
   const swapCompletions = entries.filter(([key]) => !key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
   const ownedPacks = PACKS.filter((pack) => pack.owned || state.purchasedPacks.includes(pack.id));
   const unlockedIds = state.achievements.unlocked;
   const unlockedCount = ACHIEVEMENTS.filter((achievement) => unlockedIds[achievement.id]).length;
-  const categoryNames = { general: 'General', difficulty: 'Difficulty', daily: 'Daily', collections: 'Collections', tools: 'Tools' };
+  const categoryNames = { general: 'General', difficulty: 'Difficulty', daily: 'Challenges', collections: 'Collections', tools: 'Tools' };
   const avatar = signedIn && profile.photoURL
     ? `<img id="profileAvatarImage" class="avatar avatar-image" src="${escapeHtml(profile.photoURL)}" alt="${escapeHtml(profile.name || 'Player')} profile photo" referrerpolicy="no-referrer" />`
     : `<div class="avatar">${escapeHtml((profile.name || 'G').slice(0, 1).toUpperCase())}</div>`;
@@ -1043,6 +1233,9 @@ function renderProfile() {
         <div class="profile-stat"><span>🔥</span><strong>${daily.currentStreak.toLocaleString()}</strong><small>Current Streak</small></div>
         <div class="profile-stat"><span>🔥</span><strong>${daily.longestStreak.toLocaleString()}</strong><small>Longest Streak</small></div>
         <div class="profile-stat"><span>⚡</span><strong>${fastestDaily}</strong><small>Fastest Daily</small></div>
+        <div class="profile-stat"><span>📆</span><strong>${weeklyStats.totalCompletions.toLocaleString()}</strong><small>Weekly Challenges</small></div>
+        <div class="profile-stat"><span>🔥</span><strong>${weeklyStats.currentStreak.toLocaleString()}</strong><small>Weekly Current Streak</small></div>
+        <div class="profile-stat"><span>🏅</span><strong>${weeklyStats.longestStreak.toLocaleString()}</strong><small>Weekly Longest Streak</small></div>
         <div class="profile-stat"><span>💰</span><strong>${Number(state.coins || 0).toLocaleString()}</strong><small>Current Coins</small></div>
       </div>
       <div class="owned-pack-list"><strong>Owned Packs</strong><p>${ownedPacks.map((pack) => escapeHtml(pack.title)).join(' · ')}</p></div>
@@ -1223,6 +1416,7 @@ function finishGame() {
   state.totalMoves = (state.totalMoves || 0) + game.moves;
   state.totalSeconds = (state.totalSeconds || 0) + game.seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  recordWeeklyPuzzleCompletion('swap', state.difficulty);
   evaluateAchievements();
   saveState();
 
@@ -1360,6 +1554,7 @@ function finishJigsaw(engine) {
   state.totalMoves = (state.totalMoves || 0) + engine.moves;
   state.totalSeconds = (state.totalSeconds || 0) + seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
+  recordWeeklyPuzzleCompletion('jigsaw', engine.difficulty, dailyResult.firstToday ? engine.dailyChallenge?.dateKey : null);
   evaluateAchievements();
   saveState();
   clearActiveJigsawSave();
