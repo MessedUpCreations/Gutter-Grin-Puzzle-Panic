@@ -2706,11 +2706,11 @@ class JigsawEngine {
     const surface = ctx.createRadialGradient(this.worldWidth / 2, this.worldHeight / 2, 80, this.worldWidth / 2, this.worldHeight / 2, Math.max(this.worldWidth, this.worldHeight) * .6);
     surface.addColorStop(0, style.center); surface.addColorStop(1, style.base);
     ctx.fillStyle = surface; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
-    ctx.save(); ctx.globalAlpha = .18; ctx.strokeStyle = style.accent; ctx.lineWidth = 2 / this.camera.zoom;
+    ctx.save(); ctx.globalAlpha = .18; ctx.strokeStyle = style.accent; ctx.lineWidth = 2;
     if (style.pattern === 'wood') for (let y = 45; y < this.worldHeight; y += 105) { ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(this.worldWidth * .3, y + 18, this.worldWidth * .7, y - 18, this.worldWidth, y + 6); ctx.stroke(); }
     if (style.pattern === 'grid' || style.pattern === 'space') { const step = Math.max(120, Math.round(this.worldWidth / 28)); for (let x = 0; x < this.worldWidth; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.worldHeight); ctx.stroke(); } for (let y = 0; y < this.worldHeight; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.worldWidth, y); ctx.stroke(); } }
     if (style.pattern === 'stone') { const step = Math.max(180, Math.round(this.worldWidth / 18)); for (let y = 0; y < this.worldHeight; y += step) for (let x = -(y / step % 2) * step / 2; x < this.worldWidth; x += step) ctx.strokeRect(x, y, step, step * .62); }
-    if (style.pattern === 'space') { ctx.fillStyle = '#dce7ff'; for (let i = 0; i < 70; i += 1) ctx.fillRect((i * 977) % this.worldWidth, (i * 593) % this.worldHeight, 3 / this.camera.zoom, 3 / this.camera.zoom); }
+    if (style.pattern === 'space') { ctx.fillStyle = '#dce7ff'; for (let i = 0; i < 70; i += 1) ctx.fillRect((i * 977) % this.worldWidth, (i * 593) % this.worldHeight, 3, 3); }
     if (style.pattern === 'metal') { for (let i = 0; i < 34; i += 1) { const x = (i * 317) % this.worldWidth, y = (i * 191) % this.worldHeight; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.min(this.worldWidth, x + 90), Math.min(this.worldHeight, y + 18)); ctx.stroke(); } }
     ctx.restore();
   }
@@ -2740,11 +2740,12 @@ class JigsawEngine {
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
     ctx.clearRect(0, 0, this.worldWidth, this.worldHeight);
     ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
+    // Table cosmetics are viewport-fixed; the navigable puzzle world is transformed below.
+    this.drawTableSurface(ctx);
     ctx.save();
     ctx.translate(this.worldWidth / 2, this.worldHeight / 2);
     ctx.scale(this.camera.zoom, this.camera.zoom);
     ctx.translate(-this.camera.x, -this.camera.y);
-    this.drawTableSurface(ctx);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
     ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
