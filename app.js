@@ -79,6 +79,42 @@ const DEFAULT_DAILY_CHALLENGE_STATS = Object.freeze({
   fastestDifficulty: null,
 });
 
+const COSMETICS = Object.freeze({
+  tables: Object.freeze([
+    { id: 'classic-table', title: 'Classic Table', description: 'The original dark Puzzle Panic workspace.', category: 'tables', coinPrice: 0, free: true, previewClass: 'classic-table', style: { base: '#0e0e11', center: '#17171c', accent: '#62626e', pattern: 'classic' } },
+    { id: 'warm-wood', title: 'Warm Wood', description: 'Warm timber with restrained procedural grain.', category: 'tables', coinPrice: 100, free: false, previewClass: 'warm-wood', style: { base: '#352014', center: '#70452b', accent: '#a8754d', pattern: 'wood' } },
+    { id: 'neon-arcade', title: 'Neon Arcade', description: 'A dark arcade surface with subtle neon grid lines.', category: 'tables', coinPrice: 150, free: false, previewClass: 'neon-arcade', style: { base: '#090b18', center: '#15152a', accent: '#2be6ff', pattern: 'grid' } },
+    { id: 'dungeon-stone', title: 'Dungeon Stone', description: 'Shadowy stone slabs and quiet cracks.', category: 'tables', coinPrice: 200, free: false, previewClass: 'dungeon-stone', style: { base: '#17181a', center: '#333438', accent: '#666970', pattern: 'stone' } },
+    { id: 'space-grid', title: 'Space Grid', description: 'Deep space with a sparse navigational grid.', category: 'tables', coinPrice: 250, free: false, previewClass: 'space-grid', style: { base: '#050713', center: '#101a30', accent: '#718cff', pattern: 'space' } },
+    { id: 'dumpster-deluxe', title: 'Dumpster Deluxe', description: 'Industrial green metal with tasteful grime.', category: 'tables', coinPrice: 300, free: false, previewClass: 'dumpster-deluxe', style: { base: '#172019', center: '#354632', accent: '#82915d', pattern: 'metal' } },
+  ].map(Object.freeze)),
+  effects: Object.freeze([
+    { id: 'classic-effect', title: 'Classic', description: 'The original clean connection pulse.', category: 'effects', coinPrice: 0, free: true, previewClass: 'classic-effect', colors: ['#b9ff36'] },
+    { id: 'gold-spark', title: 'Gold Spark', description: 'A brief golden spark and ring.', category: 'effects', coinPrice: 50, free: false, previewClass: 'gold-spark', colors: ['#ffd84a', '#fff1a3'] },
+    { id: 'fire-pop', title: 'Fire Pop', description: 'A restrained orange-red spark burst.', category: 'effects', coinPrice: 75, free: false, previewClass: 'fire-pop', colors: ['#ff3b22', '#ff9b31', '#ffd15a'] },
+    { id: 'rainbow-burst', title: 'Rainbow Burst', description: 'A short multicolor celebration.', category: 'effects', coinPrice: 100, free: false, previewClass: 'rainbow-burst', colors: ['#ff4057', '#ffd84a', '#62e86f', '#46bfff', '#bb6cff'] },
+    { id: 'retro-pixel', title: 'Retro Pixel', description: 'Blocky arcade-style particles.', category: 'effects', coinPrice: 125, free: false, previewClass: 'retro-pixel', colors: ['#55dfff', '#ff4fd8', '#b9ff36'] },
+  ].map(Object.freeze)),
+});
+
+function normalizeCosmetics(value) {
+  const saved = value && typeof value === 'object' ? value : {};
+  const tableIds = new Set(COSMETICS.tables.map((item) => item.id));
+  const effectIds = new Set(COSMETICS.effects.map((item) => item.id));
+  const ownedTables = [...new Set(['classic-table', ...(Array.isArray(saved.ownedTables) ? saved.ownedTables : [])])].filter((id) => tableIds.has(id));
+  const ownedEffects = [...new Set(['classic-effect', ...(Array.isArray(saved.ownedEffects) ? saved.ownedEffects : [])])].filter((id) => effectIds.has(id));
+  return {
+    ownedTables,
+    ownedEffects,
+    equippedTable: ownedTables.includes(saved.equippedTable) ? saved.equippedTable : 'classic-table',
+    equippedEffect: ownedEffects.includes(saved.equippedEffect) ? saved.equippedEffect : 'classic-effect',
+  };
+}
+
+function cosmeticById(id) {
+  return [...COSMETICS.tables, ...COSMETICS.effects].find((item) => item.id === id);
+}
+
 const WEEKLY_CHALLENGES = Object.freeze([
   Object.freeze({ id: 'puzzle-bender', title: 'Puzzle Bender', description: 'Complete 5 puzzles in any mode, including Daily Challenges.', icon: '🏆', reward: 100, target: 5, unit: 'puzzles', progress: (weekly) => weekly.progress.puzzleCompletions, complete: (weekly) => weekly.progress.puzzleCompletions >= 5 }),
   Object.freeze({ id: 'jigsaw-junkie', title: 'Jigsaw Junkie', description: 'Legitimately place 1,000 Jigsaw pieces.', icon: '🧩', reward: 100, target: 1000, unit: 'pieces', progress: (weekly) => weekly.progress.jigsawPiecesPlaced, complete: (weekly) => weekly.progress.jigsawPiecesPlaced >= 1000 }),
@@ -246,6 +282,11 @@ function ownedPackCount() {
   return PACKS.filter((pack) => pack.owned || state.purchasedPacks.includes(pack.id)).length;
 }
 
+function paidCosmeticCount() {
+  const cosmetics = normalizeCosmetics(state.cosmetics);
+  return [...cosmetics.ownedTables, ...cosmetics.ownedEffects].filter((id) => cosmeticById(id)?.coinPrice > 0).length;
+}
+
 function lifetimeToolUseCount() {
   return Object.values(normalizeLifetimeStats(state.lifetimeStats).toolsUsedLifetime).reduce((total, count) => total + count, 0);
 }
@@ -270,6 +311,9 @@ const ACHIEVEMENTS = Object.freeze([
   { id: 'groovy-baby', title: 'Groovy, Baby', description: "Complete every Wild n' Groovy puzzle.", category: 'collections', icon: '🪩', target: 5, unit: 'puzzles', progress: () => packCompletionCount('wild-n-groovy') },
   { id: 'quest-complete', title: 'Quest Complete', description: 'Complete every Epic Fantasy puzzle.', category: 'collections', icon: '🐉', target: 5, unit: 'puzzles', progress: () => packCompletionCount('epic-fantasy') },
   { id: 'collector', title: 'Collector', description: 'Own every currently available puzzle pack.', category: 'collections', icon: '📦', target: () => PACKS.filter((pack) => pack.available).length, unit: 'packs', progress: ownedPackCount },
+  { id: 'retail-therapy', title: 'Retail Therapy', description: 'Purchase your first cosmetic.', category: 'collections', icon: '🛍️', target: 1, unit: 'cosmetics', progress: paidCosmeticCount },
+  { id: 'table-hoarder', title: 'Table Hoarder', description: 'Own every Puzzle Table.', category: 'collections', icon: '🎨', target: () => COSMETICS.tables.length, unit: 'tables', progress: () => normalizeCosmetics(state.cosmetics).ownedTables.length },
+  { id: 'sparkle-addict', title: 'Sparkle Addict', description: 'Own every Piece Effect.', category: 'collections', icon: '✨', target: () => COSMETICS.effects.length, unit: 'effects', progress: () => normalizeCosmetics(state.cosmetics).ownedEffects.length },
   { id: 'need-a-little-help', title: 'Need a Little Help?', description: 'Use your first Jigsaw Tool.', category: 'tools', icon: '🛠️', target: 1, unit: 'tools', progress: lifetimeToolUseCount },
   { id: 'training-wheels', title: 'Training Wheels', description: 'Use Auto-Place 25 times.', category: 'tools', icon: '✨', target: 25, unit: 'Auto-Places', progress: () => normalizeLifetimeStats(state.lifetimeStats).toolsUsedLifetime.autoPlaces },
 ].map((achievement) => Object.freeze({ hidden: false, ...achievement })));
@@ -288,6 +332,7 @@ const defaultState = {
   difficulty: 'normal',
   completed: {},
   purchasedPacks: ['starter'],
+  cosmetics: normalizeCosmetics(),
   totalMoves: 0,
   totalSeconds: 0,
   puzzlesCompleted: 0,
@@ -591,6 +636,7 @@ function getCloudSavePayload() {
     purchasedPacks: Array.isArray(state.purchasedPacks)
       ? state.purchasedPacks
       : ['starter'],
+    cosmetics: normalizeCosmetics(state.cosmetics),
     totalMoves: Number(state.totalMoves || 0),
     totalSeconds: Number(state.totalSeconds || 0),
     puzzlesCompleted: Number(state.puzzlesCompleted || 0),
@@ -667,6 +713,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       purchasedPacks: Array.isArray(cloud.purchasedPacks)
         ? cloud.purchasedPacks
         : ['starter'],
+      cosmetics: normalizeCosmetics(cloud.cosmetics),
       totalMoves: cloud.totalMoves ?? 0,
       totalSeconds: cloud.totalSeconds ?? 0,
       puzzlesCompleted: cloud.puzzlesCompleted ?? 0,
@@ -690,6 +737,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     purchasedPacks: Array.isArray(localBeforeSignIn.purchasedPacks)
       ? [...localBeforeSignIn.purchasedPacks]
       : ['starter'],
+    cosmetics: normalizeCosmetics(localBeforeSignIn.cosmetics),
     dailyChallengeStats: normalizeDailyChallengeStats(localBeforeSignIn.dailyChallengeStats),
     weeklyChallenge: normalizeWeeklyChallenge(localBeforeSignIn.weeklyChallenge),
     weeklyChallengeStats: normalizeWeeklyChallengeStats(localBeforeSignIn.weeklyChallengeStats),
@@ -718,6 +766,7 @@ function loadState() {
     const loaded = { ...structuredClone(defaultState), ...saved, profile: { ...defaultState.profile, ...(saved?.profile || {}) } };
     loaded.selectedMode = GAME_MODES[loaded.selectedMode] ? loaded.selectedMode : 'swap';
     loaded.dailyChallengeStats = normalizeDailyChallengeStats(saved?.dailyChallengeStats);
+    loaded.cosmetics = normalizeCosmetics(saved?.cosmetics);
     loaded.weeklyChallenge = normalizeWeeklyChallenge(saved?.weeklyChallenge);
     loaded.weeklyChallengeStats = normalizeWeeklyChallengeStats(saved?.weeklyChallengeStats);
     loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
@@ -863,6 +912,7 @@ function renderView() {
   if (currentView === 'home') renderHome();
   if (currentView === 'puzzles') renderPuzzles();
   if (currentView === 'shop') renderShop();
+  if (currentView === 'cosmetics') renderCosmetics();
   if (currentView === 'profile') renderProfile();
   updateWallet();
 }
@@ -1176,6 +1226,78 @@ function buyPack(packId) {
   renderShop();
 }
 
+function renderCosmeticCard(item) {
+  const cosmetics = normalizeCosmetics(state.cosmetics);
+  const ownedList = item.category === 'tables' ? cosmetics.ownedTables : cosmetics.ownedEffects;
+  const equippedId = item.category === 'tables' ? cosmetics.equippedTable : cosmetics.equippedEffect;
+  const owned = ownedList.includes(item.id);
+  const equipped = equippedId === item.id;
+  const action = equipped
+    ? '<button class="btn ghost" disabled>EQUIPPED</button>'
+    : owned
+      ? `<button class="btn subtle" data-equip-cosmetic="${item.id}">EQUIP</button>`
+      : `<button class="btn buy" data-buy-cosmetic="${item.id}">BUY — ${item.coinPrice} COINS</button>`;
+  return `<article class="cosmetic-card ${equipped ? 'equipped' : ''}">
+    <div class="cosmetic-preview ${item.category === 'tables' ? 'table-preview' : 'effect-preview'} ${item.previewClass}"><span></span></div>
+    <div class="cosmetic-copy"><span class="badge ${owned ? 'owned' : ''}">${equipped ? '✓ EQUIPPED' : owned ? '✓ OWNED' : item.free ? 'FREE' : `${item.coinPrice} COINS`}</span><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.description)}</p></div>
+    <div class="cosmetic-action">${action}</div>
+  </article>`;
+}
+
+function renderCosmetics() {
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  viewHost.innerHTML = `<div class="section-head cosmetics-heading"><div><h3>Customize</h3><p>Jigsaw-only visual styles. Your Coins: <strong>${Number(state.coins).toLocaleString()}</strong></p></div></div>
+    <div class="section-head cosmetic-section-head"><div><h3>Puzzle Tables</h3><p>Procedural workspace themes.</p></div></div>
+    <div class="cosmetic-grid">${COSMETICS.tables.map(renderCosmeticCard).join('')}</div>
+    <div class="section-head cosmetic-section-head"><div><h3>Piece Effects</h3><p>Short feedback for successful connections and placements.</p></div></div>
+    <div class="cosmetic-grid">${COSMETICS.effects.map(renderCosmeticCard).join('')}</div>`;
+  $$('[data-buy-cosmetic]').forEach((button) => button.addEventListener('click', () => confirmCosmeticPurchase(button.dataset.buyCosmetic)));
+  $$('[data-equip-cosmetic]').forEach((button) => button.addEventListener('click', () => equipCosmetic(button.dataset.equipCosmetic)));
+}
+
+function confirmCosmeticPurchase(id) {
+  const item = cosmeticById(id);
+  if (!item || item.free) return;
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  const owned = item.category === 'tables' ? state.cosmetics.ownedTables : state.cosmetics.ownedEffects;
+  if (owned.includes(id)) return renderCosmetics();
+  if (state.coins < item.coinPrice) return showModal('Not Enough Coins', `Need ${item.coinPrice} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
+  showModal(`Unlock ${item.title}?`, `Unlock ${item.title} for ${item.coinPrice} coins?`, [
+    { label: 'Cancel' },
+    { label: 'Unlock', primary: true, action: () => purchaseCosmetic(id) },
+  ], '✨');
+}
+
+function purchaseCosmetic(id) {
+  const item = cosmeticById(id);
+  if (!item || item.free) return false;
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  const owned = item.category === 'tables' ? state.cosmetics.ownedTables : state.cosmetics.ownedEffects;
+  if (owned.includes(id) || state.coins < item.coinPrice) return false;
+  state.coins -= item.coinPrice;
+  owned.push(id);
+  if (item.category === 'tables') state.cosmetics.equippedTable = id;
+  else state.cosmetics.equippedEffect = id;
+  evaluateAchievements();
+  saveState();
+  showToast(`${item.title} unlocked and equipped!`);
+  if (currentView === 'cosmetics') renderCosmetics();
+  return true;
+}
+
+function equipCosmetic(id) {
+  const item = cosmeticById(id);
+  if (!item) return false;
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  const owned = item.category === 'tables' ? state.cosmetics.ownedTables : state.cosmetics.ownedEffects;
+  if (!owned.includes(id)) return false;
+  if (item.category === 'tables') state.cosmetics.equippedTable = id;
+  else state.cosmetics.equippedEffect = id;
+  saveState();
+  if (currentView === 'cosmetics') renderCosmetics();
+  return true;
+}
+
 function formatProfileDuration(seconds) {
   const total = Math.max(0, Number(seconds || 0));
   const hours = Math.floor(total / 3600);
@@ -1201,6 +1323,10 @@ function renderProfile() {
   const lifetime = normalizeLifetimeStats(state.lifetimeStats);
   const daily = normalizeDailyChallengeStats(state.dailyChallengeStats);
   const weeklyStats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
+  const cosmetics = normalizeCosmetics(state.cosmetics);
+  const equippedTable = cosmeticById(cosmetics.equippedTable);
+  const equippedEffect = cosmeticById(cosmetics.equippedEffect);
+  const ownedCosmeticCount = cosmetics.ownedTables.length + cosmetics.ownedEffects.length;
   const entries = completionEntries();
   const jigsawCompletions = entries.filter(([key]) => key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
   const swapCompletions = entries.filter(([key]) => !key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
@@ -1239,6 +1365,7 @@ function renderProfile() {
         <div class="profile-stat"><span>💰</span><strong>${Number(state.coins || 0).toLocaleString()}</strong><small>Current Coins</small></div>
       </div>
       <div class="owned-pack-list"><strong>Owned Packs</strong><p>${ownedPacks.map((pack) => escapeHtml(pack.title)).join(' · ')}</p></div>
+      <div class="profile-cosmetics"><strong>Customization</strong><p>Puzzle Table: ${escapeHtml(equippedTable.title)} · Piece Effect: ${escapeHtml(equippedEffect.title)}</p><small>${ownedCosmeticCount} / ${COSMETICS.tables.length + COSMETICS.effects.length} cosmetics owned</small></div>
       <div class="profile-actions">
         ${profile.provider === 'guest' ? `
           <button class="btn provider" id="profileGoogleBtn"><span class="provider-icon">G</span> Connect Google</button>
@@ -1534,6 +1661,7 @@ function finishJigsaw(engine) {
   closeJigsawToolsPanel();
   $('#jigsawToolsBtn').disabled = true;
   engine.stopTimer();
+  engine.safelyTriggerCosmeticEffect({ x: engine.board.x + engine.board.width / 2, y: engine.board.y + engine.board.height / 2 }, true);
   engine.renderCompleted();
   const seconds = engine.seconds;
   const baseReward = engine.config.reward;
@@ -1630,6 +1758,10 @@ class JigsawEngine {
     this.backgroundRevealUntil = 0;
     this.edgeFinderUntil = 0;
     this.autoPlacePulse = null;
+    const cosmetics = normalizeCosmetics(state.cosmetics);
+    this.tableCosmetic = cosmeticById(cosmetics.equippedTable) || COSMETICS.tables[0];
+    this.pieceEffect = cosmeticById(cosmetics.equippedEffect) || COSMETICS.effects[0];
+    this.cosmeticBursts = [];
     this.effectTimers = new Set();
     this.framePending = false;
     this.camera = { x: this.worldWidth / 2, y: this.worldHeight / 2, zoom: 1 };
@@ -2399,6 +2531,10 @@ class JigsawEngine {
       if (!piece.placed) { piece.placed = true; newlyPlaced += 1; }
     });
     this.placed += newlyPlaced;
+    if (newlyPlaced > 0) this.safelyTriggerCosmeticEffect({
+      x: members.reduce((sum, piece) => sum + piece.targetX, 0) / members.length,
+      y: members.reduce((sum, piece) => sum + piece.targetY, 0) / members.length,
+    });
     recordLifetimeJigsawPiecesPlaced(newlyPlaced);
     $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
     return true;
@@ -2440,6 +2576,8 @@ class JigsawEngine {
     this.groups.delete(movingGroupId);
     const pulseUntil = performance.now() + 260;
     stationary.forEach((id) => { this.pieces[id].connectedPulseUntil = pulseUntil; });
+    const joined = [...stationary].map((id) => this.pieces[id]);
+    this.safelyTriggerCosmeticEffect({ x: joined.reduce((sum, piece) => sum + piece.x, 0) / joined.length, y: joined.reduce((sum, piece) => sum + piece.y, 0) / joined.length });
     this.bringGroupToFront(stationaryGroupId);
     this.canvas.dispatchEvent(new CustomEvent('jigsaw:connected', { detail: { groupId: stationaryGroupId, size: stationary.size } }));
     setTimeout(() => this.requestRender(), 270);
@@ -2544,18 +2682,70 @@ class JigsawEngine {
     requestAnimationFrame(() => { this.framePending = false; this.render(); });
   }
 
+  triggerCosmeticEffect(point, completion = false) {
+    if (this.pieceEffect.id === 'classic-effect') return;
+    const now = performance.now();
+    const count = completion ? 36 : 12;
+    const duration = completion ? 1500 : 560;
+    const radius = completion ? Math.max(this.board.width, this.board.height) * .3 : 70 / this.camera.zoom;
+    const particles = Array.from({ length: count }, (_, index) => {
+      const angle = Math.PI * 2 * index / count + Math.random() * .25;
+      return { angle, distance: radius * (.45 + Math.random() * .65), color: this.pieceEffect.colors[index % this.pieceEffect.colors.length], size: (completion ? 13 : 7) / this.camera.zoom };
+    });
+    this.cosmeticBursts.push({ point, start: now, until: now + duration, duration, completion, particles });
+    this.requestRender();
+  }
+
+  safelyTriggerCosmeticEffect(point, completion = false) {
+    try { this.triggerCosmeticEffect(point, completion); }
+    catch (error) { console.error('Cosmetic effect failed:', error); }
+  }
+
+  drawTableSurface(ctx) {
+    const style = this.tableCosmetic.style;
+    const surface = ctx.createRadialGradient(this.worldWidth / 2, this.worldHeight / 2, 80, this.worldWidth / 2, this.worldHeight / 2, Math.max(this.worldWidth, this.worldHeight) * .6);
+    surface.addColorStop(0, style.center); surface.addColorStop(1, style.base);
+    ctx.fillStyle = surface; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
+    ctx.save(); ctx.globalAlpha = .18; ctx.strokeStyle = style.accent; ctx.lineWidth = 2;
+    if (style.pattern === 'wood') for (let y = 45; y < this.worldHeight; y += 105) { ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(this.worldWidth * .3, y + 18, this.worldWidth * .7, y - 18, this.worldWidth, y + 6); ctx.stroke(); }
+    if (style.pattern === 'grid' || style.pattern === 'space') { const step = Math.max(120, Math.round(this.worldWidth / 28)); for (let x = 0; x < this.worldWidth; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.worldHeight); ctx.stroke(); } for (let y = 0; y < this.worldHeight; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.worldWidth, y); ctx.stroke(); } }
+    if (style.pattern === 'stone') { const step = Math.max(180, Math.round(this.worldWidth / 18)); for (let y = 0; y < this.worldHeight; y += step) for (let x = -(y / step % 2) * step / 2; x < this.worldWidth; x += step) ctx.strokeRect(x, y, step, step * .62); }
+    if (style.pattern === 'space') { ctx.fillStyle = '#dce7ff'; for (let i = 0; i < 70; i += 1) ctx.fillRect((i * 977) % this.worldWidth, (i * 593) % this.worldHeight, 3, 3); }
+    if (style.pattern === 'metal') { for (let i = 0; i < 34; i += 1) { const x = (i * 317) % this.worldWidth, y = (i * 191) % this.worldHeight; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(Math.min(this.worldWidth, x + 90), Math.min(this.worldHeight, y + 18)); ctx.stroke(); } }
+    ctx.restore();
+  }
+
+  drawCosmeticEffects(ctx) {
+    const now = performance.now();
+    this.cosmeticBursts = this.cosmeticBursts.filter((burst) => burst.until > now);
+    this.cosmeticBursts.forEach((burst) => {
+      const progress = Math.min(1, (now - burst.start) / burst.duration);
+      ctx.save(); ctx.globalAlpha = 1 - progress;
+      if (this.pieceEffect.id !== 'retro-pixel') { ctx.strokeStyle = burst.particles[0].color; ctx.lineWidth = (burst.completion ? 8 : 4) / this.camera.zoom; ctx.beginPath(); ctx.arc(burst.point.x, burst.point.y, (20 + burst.particles[0].distance * progress) / this.camera.zoom, 0, Math.PI * 2); ctx.stroke(); }
+      burst.particles.forEach((particle) => {
+        const distance = particle.distance * progress;
+        const x = burst.point.x + Math.cos(particle.angle) * distance;
+        const y = burst.point.y + Math.sin(particle.angle) * distance;
+        ctx.fillStyle = particle.color;
+        if (this.pieceEffect.id === 'retro-pixel') ctx.fillRect(x, y, particle.size, particle.size);
+        else { ctx.beginPath(); ctx.arc(x, y, particle.size * (1 - progress * .55), 0, Math.PI * 2); ctx.fill(); }
+      });
+      ctx.restore();
+    });
+    if (this.cosmeticBursts.length) this.requestRender();
+  }
+
   render() {
     const ctx = this.ctx;
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
     ctx.clearRect(0, 0, this.worldWidth, this.worldHeight);
     ctx.fillStyle = '#08080a'; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
+    // Table cosmetics are viewport-fixed; the navigable puzzle world is transformed below.
+    this.drawTableSurface(ctx);
     ctx.save();
     ctx.translate(this.worldWidth / 2, this.worldHeight / 2);
     ctx.scale(this.camera.zoom, this.camera.zoom);
     ctx.translate(-this.camera.x, -this.camera.y);
-    const surface = ctx.createRadialGradient(this.worldWidth / 2, this.worldHeight / 2, 80, this.worldWidth / 2, this.worldHeight / 2, Math.max(this.worldWidth, this.worldHeight) * .55);
-    surface.addColorStop(0, '#17171c'); surface.addColorStop(1, '#0e0e11');
-    ctx.fillStyle = surface; ctx.fillRect(0, 0, this.worldWidth, this.worldHeight);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 28; ctx.shadowOffsetY = 10;
     ctx.fillStyle = '#202027'; ctx.fillRect(this.board.x - 9, this.board.y - 9, this.board.width + 18, this.board.height + 18);
@@ -2567,6 +2757,7 @@ class JigsawEngine {
     if (this.previewing || this.completed) {
       ctx.drawImage(this.image, this.board.x, this.board.y, this.board.width, this.board.height);
       ctx.strokeStyle = '#f7f7f5'; ctx.lineWidth = 2 / this.camera.zoom; ctx.strokeRect(this.board.x, this.board.y, this.board.width, this.board.height);
+      this.drawCosmeticEffects(ctx);
       ctx.restore();
       return;
     }
@@ -2587,6 +2778,7 @@ class JigsawEngine {
     });
     if (this.hintTarget?.until > performance.now()) this.drawTargetPulse(this.pieces[this.hintTarget.pieceId], this.hintTarget.until, '#ffd84a');
     if (this.autoPlacePulse?.until > performance.now()) this.drawTargetPulse(this.pieces[this.autoPlacePulse.pieceId], this.autoPlacePulse.until, '#b9ff36');
+    this.drawCosmeticEffects(ctx);
     ctx.restore();
     if (this.hintTarget?.until > performance.now() || this.autoPlacePulse?.until > performance.now()) this.requestRender();
     if (this.metrics.firstRenderMs === null && this.firstRenderStartedAt) this.metrics.firstRenderMs = performance.now() - this.firstRenderStartedAt;
