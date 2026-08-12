@@ -1,0 +1,3 @@
+'use strict';
+const { route } = require('../_lib/route'); const { runEconomyOperation } = require('../_lib/economy-transaction'); const { TOOLS } = require('../_lib/economy-config'); const { send, apiError } = require('../_lib/http');
+module.exports = route('POST', async (req, res, uid) => { const { toolId, operationId } = req.body; if (typeof toolId !== 'string' || !Object.hasOwn(TOOLS, toolId)) throw apiError(400, 'invalid_tool', 'Unknown tool.'); const result = await runEconomyOperation(uid, operationId, 'spend-tool', (economy) => { const price = TOOLS[toolId]; if (economy.coins < price) throw apiError(402, 'insufficient_funds', `Need ${price} coins — you have ${economy.coins}.`); economy.coins -= price; return { toolId, price }; }); send(res, 200, result); });

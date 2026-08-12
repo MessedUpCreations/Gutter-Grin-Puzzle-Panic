@@ -1,4 +1,4 @@
-const CACHE = 'gutter-grin-puzzle-panic-v21';
+const CACHE = 'gutter-grin-puzzle-panic-v22';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
   './assets/puzzles/starter/backyard-cookout.webp',
@@ -35,6 +35,8 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
   if (event.request.method !== 'GET') return;
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {

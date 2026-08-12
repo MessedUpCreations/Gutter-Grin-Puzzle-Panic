@@ -51,3 +51,12 @@ The prototype authenticates the player once credentials are added, but game prog
 - Cloud save/sync and account migration from guest to signed-in player.
 - Admin/content pipeline for adding packs without editing source code.
 - Analytics, privacy policy/terms, moderation/age-rating decisions, and payment/legal review before commercial launch.
+# Secure economy development
+
+Authenticated coin and entitlement operations run through Vercel Functions under `/api/economy` and store authoritative state in `economy/{uid}`. Configure `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`, and `FIREBASE_ADMIN_PRIVATE_KEY` in Vercel; never expose these values through client-prefixed variables. Escaped newlines in the private key are normalized server-side.
+
+For local API testing, configure those variables outside Git and run the project with `vercel dev`. Opening the static files directly cannot provide authenticated `/api` routes; signed-in economy actions will intentionally fail closed, while guest play remains local.
+
+The bootstrap route imports valid economy fields from `users/{uid}/saves/main` only when `economy/{uid}` does not exist. This legacy client-authoritative bridge should be disabled for new production accounts after migration is complete.
+
+Current limitations: completion claims and Weekly objective eligibility remain client-attested, so this foundation limits arbitrary balances/prices and duplicate operations but is not full anti-cheat. Rate limiting and trusted gameplay-event verification remain future work.

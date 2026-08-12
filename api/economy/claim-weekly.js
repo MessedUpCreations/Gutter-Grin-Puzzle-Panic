@@ -1,0 +1,3 @@
+'use strict';
+const { route } = require('../_lib/route'); const { runEconomyOperation } = require('../_lib/economy-transaction'); const { weeklyForDate } = require('../_lib/economy-config'); const { send, apiError } = require('../_lib/http');
+module.exports = route('POST', async (req, res, uid) => { const weekly = weeklyForDate(new Date()); if (req.body.challengeId !== weekly.id) throw apiError(400, 'invalid_weekly', 'Claim does not match the current Weekly Challenge.'); const result = await runEconomyOperation(uid, `weekly:${weekly.weekKey}`, 'claim-weekly', (economy) => { economy.coins += weekly.reward; return { weekKey: weekly.weekKey, challengeId: weekly.id, coinsAwarded: weekly.reward }; }); send(res, 200, result); });

@@ -1,0 +1,14 @@
+{
+  "name": "gutter-grin-puzzle-panic",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.2.0"
+  },
+  "scripts": {
+    "test:server": "node --test test/server/*.test.js"
+  }
+}
