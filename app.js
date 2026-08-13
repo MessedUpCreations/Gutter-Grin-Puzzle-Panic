@@ -1,3 +1,5 @@
+import { computeJigsawCanvasSize, hasFirestoreInvalidValue, normalizeActiveJigsawSave, stableDailyChallenge } from './jigsaw-support.js';
+
 const PUZZLES = [
   // Keep these five legacy IDs stable so existing completion and Jigsaw save keys remain valid.
   { id: 'smooch-mode', title: 'Backyard Cookout', image: 'assets/puzzles/starter/backyard-cookout.webp', width: 1402, height: 1122, pack: 'starter' },
@@ -583,15 +585,19 @@ function recordLifetimeToolUse(counter) {
 
 function jigsawSaveScope() { return state.profile?.uid || 'guest'; }
 function validActiveJigsawSave(save) {
-  return !!save && save.v === 1 && PUZZLES.some((p) => p.id === save.puzzleId)
-    && JIGSAW_DIFFICULTIES[save.difficulty]?.pieces === save.pieces?.length
-    && Number.isInteger(save.seed) && Array.isArray(save.camera) && Array.isArray(save.drawOrder);
+  const count = JIGSAW_DIFFICULTIES[save?.difficulty]?.pieces;
+  return PUZZLES.some((p) => p.id === save?.puzzleId) && Number.isInteger(save?.seed)
+    && !!normalizeActiveJigsawSave(save, count);
+}
+function normalizedActiveJigsawSave(save) {
+  if (!PUZZLES.some((p) => p.id === save?.puzzleId) || !Number.isInteger(save?.seed)) return null;
+  return normalizeActiveJigsawSave(save, JIGSAW_DIFFICULTIES[save.difficulty]?.pieces);
 }
 function readLocalActiveJigsaw() {
   try {
     const all = JSON.parse(localStorage.getItem(JIGSAW_SAVE_KEY)) || {};
     const save = all[jigsawSaveScope()];
-    return validActiveJigsawSave(save) ? save : null;
+    return normalizedActiveJigsawSave(save);
   } catch { return null; }
 }
 function writeLocalActiveJigsaw(save) {
@@ -603,10 +609,12 @@ function writeLocalActiveJigsaw(save) {
 }
 async function saveActiveJigsawToCloud(save) {
   if (!state.profile?.uid || state.profile.provider === 'guest') return;
+  const safeSave = normalizedActiveJigsawSave(save);
+  if (!safeSave || hasFirestoreInvalidValue(safeSave)) throw new Error('Active Jigsaw save is not Firestore-safe.');
   const { db, firestoreMod, auth } = await getFirebaseContext();
   if (auth.currentUser?.uid !== state.profile.uid) return;
   const ref = firestoreMod.doc(db, 'users', state.profile.uid, 'jigsawSaves', 'active');
-  await firestoreMod.setDoc(ref, save);
+  await firestoreMod.setDoc(ref, safeSave);
 }
 async function deleteActiveJigsawFromCloud() {
   if (!state.profile?.uid || state.profile.provider === 'guest') return;
@@ -621,7 +629,7 @@ async function hydrateActiveJigsawSave() {
     try {
       const { db, firestoreMod } = await getFirebaseContext();
       const snapshot = await firestoreMod.getDoc(firestoreMod.doc(db, 'users', state.profile.uid, 'jigsawSaves', 'active'));
-      if (snapshot.exists() && validActiveJigsawSave(snapshot.data())) cloud = snapshot.data();
+      if (snapshot.exists()) cloud = normalizedActiveJigsawSave(snapshot.data());
     } catch (error) { console.error('Active Jigsaw load failed:', error); }
   }
   activeJigsawSave = !cloud || (local?.updatedAt || 0) > (cloud.updatedAt || 0) ? local : cloud;
@@ -1969,7 +1977,7 @@ function showJigsawPreparation(puzzle, options = {}) {
 }
 
 async function startJigsaw(resumeSave = null) {
-  resumeSave = validActiveJigsawSave(resumeSave) ? resumeSave : null;
+  resumeSave = normalizedActiveJigsawSave(resumeSave);
   const puzzle = jigsawGame?.puzzle;
   const difficulty = jigsawGame?.difficulty || 'easy';
   if (!puzzle) return;
@@ -2105,7 +2113,8 @@ class JigsawEngine {
     this.config = JIGSAW_DIFFICULTIES[this.difficulty];
     this.pieceCount = this.config.pieces;
     const worlds = { easy: [1400, 900], normal: [2400, 1600], hard: [3600, 2400], insane: [5200, 3400] };
-    [this.worldWidth, this.worldHeight] = options.resumeSave?.world || worlds[this.difficulty];
+    const savedWorld = options.resumeSave?.world;
+    [this.worldWidth, this.worldHeight] = savedWorld ? [savedWorld.width, savedWorld.height] : worlds[this.difficulty];
     this.seed = Number.isInteger(options.seed) ? options.seed : this.createSeed();
     this.randomState = this.seed >>> 0;
     this.resumeSave = options.resumeSave || null;
@@ -2145,7 +2154,10 @@ class JigsawEngine {
     this.spacePressed = false;
     this.spatialCellSize = this.pieceCount >= 500 ? 140 : 0;
     this.spatialIndex = new Map();
-    this.resizeObserver = new ResizeObserver(() => { this.resizeCanvas(); this.requestRender(); });
+    this.lastCanvasSize = null;
+    this.resizeFrame = null;
+    this.invalidResizeWarned = false;
+    this.resizeObserver = new ResizeObserver(() => this.queueResize());
     this.onPointerDown = (event) => this.pointerDown(event);
     this.onPointerMove = (event) => this.pointerMove(event);
     this.onPointerUp = (event) => this.pointerUp(event);
@@ -2177,7 +2189,7 @@ class JigsawEngine {
     this.rebuildSpatialIndex();
     this.metrics.setupMs = performance.now() - setupStarted;
     this.bindEvents();
-    this.resizeCanvas();
+    const initiallySized = this.resizeCanvas();
     if (!this.resumeSave) this.applyDefaultWorkingView(false);
     this.startedAt = Date.now();
     this.firstRenderStartedAt = performance.now();
@@ -2187,6 +2199,7 @@ class JigsawEngine {
       $('#jigsawTimerText').textContent = formatTime(this.seconds);
     }, 250);
     this.requestRender();
+    if (!initiallySized) this.queueResize(true);
     if (!this.resumeSave) scheduleActiveJigsawSave(this, true);
     this.checkpointTimer = setInterval(() => scheduleActiveJigsawSave(this), 30000);
   }
@@ -2494,32 +2507,34 @@ class JigsawEngine {
 
   serializeActiveSave() {
     const elapsedSeconds = this.elapsedBase + Math.floor((Date.now() - this.startedAt) / 1000);
-    return {
-      v: 1, mode: 'jigsaw', puzzleId: this.puzzle.id, difficulty: this.difficulty,
+    const rawSave = {
+      v: 2, mode: 'jigsaw', puzzleId: this.puzzle.id, difficulty: this.difficulty,
       seed: this.seed, elapsedSeconds, moves: this.moves, placed: this.placed,
       assisted: this.assisted,
       toolsUsed: { ...this.toolsUsed },
       coinsSpentOnTools: this.coinsSpentOnTools,
-      dailyChallenge: this.dailyChallenge ? { ...this.dailyChallenge } : undefined,
-      world: [this.worldWidth, this.worldHeight],
-      camera: [this.camera.x, this.camera.y, this.camera.zoom],
+      world: { width: this.worldWidth, height: this.worldHeight },
+      camera: { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom },
       drawOrder: [...this.drawOrder],
-      pieces: this.pieces.map((piece) => [Math.round(piece.x * 100) / 100, Math.round(piece.y * 100) / 100, piece.groupId, piece.placed ? 1 : 0]),
+      pieces: this.pieces.map((piece) => ({ id: piece.id, x: Math.round(piece.x * 100) / 100, y: Math.round(piece.y * 100) / 100, groupId: piece.groupId, placed: piece.placed === true })),
       updatedAt: Date.now(),
     };
+    const dailyChallenge = stableDailyChallenge(this.dailyChallenge);
+    if (dailyChallenge) rawSave.dailyChallenge = dailyChallenge;
+    return normalizeActiveJigsawSave(rawSave, this.pieceCount);
   }
 
   restoreActiveSave(save) {
     this.groups.clear();
     save.pieces.forEach((record, id) => {
       const piece = this.pieces[id];
-      [piece.x, piece.y, piece.groupId] = record;
-      piece.placed = !!record[3];
+      ({ x: piece.x, y: piece.y, groupId: piece.groupId } = record);
+      piece.placed = record.placed === true;
       if (!this.groups.has(piece.groupId)) this.groups.set(piece.groupId, new Set());
       this.groups.get(piece.groupId).add(id);
     });
     this.drawOrder = save.drawOrder.length === this.pieceCount ? [...save.drawOrder] : this.pieces.map((piece) => piece.id);
-    this.camera = { x: save.camera[0], y: save.camera[1], zoom: save.camera[2] };
+    this.camera = { ...save.camera };
     this.moves = Number(save.moves || 0);
     this.placed = this.pieces.filter((piece) => piece.placed).length;
     this.assisted = !!save.assisted;
@@ -2562,22 +2577,52 @@ class JigsawEngine {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('keydown', this.onKeyDown);
     this.canvas.addEventListener('keyup', this.onKeyUp);
-    this.resizeObserver.observe(this.canvas);
+    this.resizeObserver.observe(this.canvas.parentElement);
   }
 
   resizeCanvas() {
-    const rect = this.canvas.getBoundingClientRect();
+    const stage = this.canvas.parentElement;
+    const rect = stage.getBoundingClientRect();
+    const style = getComputedStyle(stage);
+    const availableWidth = rect.width - parseFloat(style.paddingLeft || 0) - parseFloat(style.paddingRight || 0);
+    const availableHeight = rect.height - parseFloat(style.paddingTop || 0) - parseFloat(style.paddingBottom || 0);
+    const size = computeJigsawCanvasSize(availableWidth, availableHeight, this.worldWidth, this.worldHeight, this.lastCanvasSize);
+    if (!size) {
+      if (!this.invalidResizeWarned && jigsawScreen.classList.contains('active')) {
+        console.warn('Jigsaw resize deferred until the workspace has valid dimensions.');
+        this.invalidResizeWarned = true;
+      }
+      return false;
+    }
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    const cssAspect = this.worldWidth / this.worldHeight;
-    let width = rect.width, height = width / cssAspect;
-    if (height > rect.height) { height = rect.height; width = height * cssAspect; }
-    this.canvas.style.width = `${Math.floor(width)}px`;
-    this.canvas.style.height = `${Math.floor(height)}px`;
-    this.canvas.width = Math.max(1, Math.floor(width * ratio));
-    this.canvas.height = Math.max(1, Math.floor(height * ratio));
-    this.scaleX = width / this.worldWidth;
-    this.scaleY = height / this.worldHeight;
+    const sameCssSize = this.lastCanvasSize === size;
+    const backingWidth = Math.max(1, Math.round(size.width * ratio));
+    const backingHeight = Math.max(1, Math.round(size.height * ratio));
+    if (sameCssSize && this.canvas.width === backingWidth && this.canvas.height === backingHeight) return false;
+    this.canvas.style.width = `${size.width}px`;
+    this.canvas.style.height = `${size.height}px`;
+    this.canvas.width = backingWidth;
+    this.canvas.height = backingHeight;
+    this.scaleX = size.width / this.worldWidth;
+    this.scaleY = size.height / this.worldHeight;
     this.pixelRatio = ratio;
+    this.lastCanvasSize = size;
+    this.invalidResizeWarned = false;
+    return true;
+  }
+
+  queueResize(retryOnce = false) {
+    if (this.resizeFrame !== null) return;
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      if (this.resizeCanvas()) this.requestRender();
+      else if (retryOnce && !this.lastCanvasSize) {
+        this.resizeFrame = requestAnimationFrame(() => {
+          this.resizeFrame = null;
+          if (this.resizeCanvas()) this.requestRender();
+        });
+      }
+    });
   }
 
   canvasScreenPoint(event) {
@@ -3112,6 +3157,7 @@ class JigsawEngine {
   }
 
   render() {
+    if (!this.lastCanvasSize) return;
     const ctx = this.ctx;
     ctx.setTransform(this.pixelRatio * this.scaleX, 0, 0, this.pixelRatio * this.scaleY, 0, 0);
     ctx.clearRect(0, 0, this.worldWidth, this.worldHeight);
@@ -3206,6 +3252,7 @@ class JigsawEngine {
   }
   destroy() {
     clearInterval(this.timer); clearInterval(this.checkpointTimer); clearTimeout(this.previewTimer); this.resizeObserver.disconnect();
+    if (this.resizeFrame !== null) cancelAnimationFrame(this.resizeFrame);
     this.effectTimers.forEach((timer) => clearTimeout(timer)); this.effectTimers.clear();
     this.cancelHintSelection(false); closeJigsawToolsPanel();
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
@@ -3550,7 +3597,7 @@ window.addEventListener('keydown', (e) => {
     else $('#exitJigsawBtn').click();
   }
 });
-window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); jigsawGame?.resize?.(); });
+window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); jigsawGame?.queueResize?.(); });
 
 function updateConnectivity(online, initial = false) {
   const status = $('#networkStatus');
