@@ -30,6 +30,7 @@ const PACKS = [
 ];
 
 function ownsPack(pack) {
+  if (signedInEconomyPlayer() && !authoritativeEconomyReady) return pack.id === 'starter';
   return pack.owned || state.purchasedPacks.includes(pack.id);
 }
 
@@ -324,6 +325,7 @@ const GAME_MODES = {
 };
 
 const STORAGE_KEY = 'gutterGrinPuzzlePanic.v1';
+const GUEST_STORAGE_KEY = 'gutterGrinPuzzlePanic.guest.v1';
 const JIGSAW_SAVE_KEY = 'gutterGrinPuzzlePanic.jigsawActive.v1';
 const defaultState = {
   profile: { provider: 'guest', name: 'Guest Player', uid: null },
@@ -341,6 +343,7 @@ const defaultState = {
   weeklyChallengeStats: { ...DEFAULT_WEEKLY_CHALLENGE_STATS },
   lifetimeStats: { totalJigsawPiecesPlaced: 0, toolsUsedLifetime: { ...DEFAULT_LIFETIME_STATS.toolsUsedLifetime } },
   achievements: { unlocked: {} },
+  pendingEconomyClaims: [],
 };
 
 let state = loadState();
@@ -349,6 +352,8 @@ let game = null;
 let timerHandle = null;
 let previewHandle = null;
 let firebaseContext = null;
+let authoritativeEconomyReady = false;
+let weeklyClaimPendingKey = null;
 let puzzleFlow = { step: 'mode', puzzleId: null };
 let jigsawGame = null;
 let activeJigsawSave = null;
@@ -385,22 +390,33 @@ function currentWeeklyChallenge(date = new Date()) {
   return WEEKLY_CHALLENGES.find((challenge) => challenge.id === state.weeklyChallenge.challengeId);
 }
 
-function evaluateWeeklyChallenge(date = new Date()) {
-  const challenge = currentWeeklyChallenge(date);
+function finalizeWeeklyCompletion(challenge, awardLocally) {
   const weekly = state.weeklyChallenge;
-  if (!challenge || weekly.rewardClaimed || !challenge.complete(weekly)) return false;
-  weekly.completed = true;
   weekly.rewardClaimed = true;
-  state.coins += challenge.reward;
+  if (awardLocally) state.coins += challenge.reward;
   const stats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
   stats.currentStreak = stats.lastCompletedWeek === adjacentUtcWeekKey(weekly.weekKey, -1) ? stats.currentStreak + 1 : 1;
   stats.longestStreak = Math.max(stats.longestStreak, stats.currentStreak);
   stats.lastCompletedWeek = weekly.weekKey;
   stats.totalCompletions += 1;
   state.weeklyChallengeStats = stats;
-  evaluateAchievements();
-  saveState();
-  showWeeklyChallengeNotification(challenge, stats.currentStreak);
+  evaluateAchievements(); saveState(); showWeeklyChallengeNotification(challenge, stats.currentStreak);
+}
+
+function evaluateWeeklyChallenge(date = new Date()) {
+  const challenge = currentWeeklyChallenge(date);
+  const weekly = state.weeklyChallenge;
+  if (!challenge || weekly.rewardClaimed || !challenge.complete(weekly)) return false;
+  weekly.completed = true;
+  if (signedInEconomyPlayer()) {
+    saveLocalState();
+    const claim = queueEconomyClaim('weekly', { challengeId: challenge.id }, `weekly:${weekly.weekKey}`);
+    if (!authoritativeEconomyReady || weeklyClaimPendingKey === weekly.weekKey) return false;
+    weeklyClaimPendingKey = weekly.weekKey;
+    resolveEconomyClaim(claim).catch(() => {}).finally(() => { weeklyClaimPendingKey = null; });
+    return false;
+  }
+  finalizeWeeklyCompletion(challenge, true);
   return true;
 }
 
@@ -600,6 +616,127 @@ async function getFirebaseContext() {
   return firebaseContext;
 }
 
+function signedInEconomyPlayer() {
+  return !!state.profile?.uid && state.profile.provider !== 'guest';
+}
+
+function economyOperationId(prefix) {
+  if (globalThis.crypto?.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
+  const bytes = new Uint32Array(4); crypto.getRandomValues(bytes);
+  return `${prefix}:${[...bytes].map((value) => value.toString(16)).join('')}`;
+}
+
+function applyAuthoritativeEconomy(result) {
+  if (!result || !Number.isFinite(result.coins)) throw new Error('Invalid economy response.');
+  state.coins = result.coins;
+  state.purchasedPacks = Array.isArray(result.ownedPacks) ? [...result.ownedPacks] : ['starter'];
+  const current = normalizeCosmetics(state.cosmetics);
+  state.cosmetics = normalizeCosmetics({
+    ownedTables: result.ownedTables,
+    ownedEffects: result.ownedEffects,
+    equippedTable: current.equippedTable,
+    equippedEffect: current.equippedEffect,
+  });
+  authoritativeEconomyReady = true;
+  saveLocalState();
+  return result;
+}
+
+function normalizePendingEconomyClaims(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.filter((claim) => {
+    if (!claim || !['puzzle', 'daily', 'weekly'].includes(claim.type) || typeof claim.operationId !== 'string'
+        || !/^[A-Za-z0-9:_-]{8,160}$/.test(claim.operationId) || !claim.payload || typeof claim.payload !== 'object'
+        || Array.isArray(claim.payload) || seen.has(claim.operationId)) return false;
+    seen.add(claim.operationId); return true;
+  }).map((claim) => {
+    const payload = claim.type === 'puzzle'
+      ? { mode: claim.payload.mode, puzzleId: claim.payload.puzzleId, difficulty: claim.payload.difficulty, elapsedSeconds: claim.payload.elapsedSeconds }
+      : claim.type === 'daily'
+        ? { puzzleId: claim.payload.puzzleId, difficulty: claim.payload.difficulty }
+        : { challengeId: claim.payload.challengeId };
+    return { operationId: claim.operationId, type: claim.type, payload, createdAt: Number(claim.createdAt) || Date.now() };
+  });
+}
+
+const economyApi = Object.freeze({
+  async request(path, { method = 'POST', body } = {}) {
+    const { auth } = await getFirebaseContext();
+    const user = auth.currentUser;
+    if (!user || user.uid !== state.profile?.uid) throw new Error('Signed-in account is unavailable.');
+    const token = await user.getIdToken(true);
+    const options = {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    };
+    const response = await fetch(`/api/economy/${path}`, options);
+    let payload = null;
+    try { payload = await response.json(); } catch { /* Safe generic error below. */ }
+    if (!response.ok) {
+      const error = new Error(payload?.message || 'Economy service temporarily unavailable. Please try again.');
+      error.code = payload?.error; error.status = response.status; throw error;
+    }
+    return payload;
+  },
+  bootstrap() { return this.request('bootstrap', { body: {} }); },
+  getState() { return this.request('state', { method: 'GET' }); },
+  purchasePack(packId, operationId) { return this.request('purchase-pack', { body: { packId, operationId } }); },
+  purchaseCosmetic(category, cosmeticId, operationId) { return this.request('purchase-cosmetic', { body: { category, cosmeticId, operationId } }); },
+  spendTool(toolId, operationId) { return this.request('spend-tool', { body: { toolId, operationId } }); },
+  rewardPuzzle(result, operationId) { return this.request('reward-puzzle', { body: { ...result, operationId } }); },
+  claimDaily(puzzleId, difficulty) { return this.request('claim-daily', { body: { puzzleId, difficulty } }); },
+  claimWeekly(challengeId) { return this.request('claim-weekly', { body: { challengeId } }); },
+});
+
+function isRetryableEconomyError(error) { return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500; }
+function queueEconomyClaim(type, payload, operationId = economyOperationId(type)) {
+  state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims);
+  let claim = state.pendingEconomyClaims.find((item) => item.operationId === operationId);
+  if (!claim) { claim = { operationId, type, payload: { ...payload }, createdAt: Date.now() }; state.pendingEconomyClaims.push(claim); saveLocalState(); }
+  return claim;
+}
+async function submitEconomyClaim(claim) {
+  if (claim.type === 'puzzle') return economyApi.rewardPuzzle(claim.payload, claim.operationId);
+  if (claim.type === 'daily') return economyApi.claimDaily(claim.payload.puzzleId, claim.payload.difficulty);
+  if (claim.type === 'weekly') return economyApi.claimWeekly(claim.payload.challengeId);
+  throw new Error('Unknown pending economy claim.');
+}
+async function resolveEconomyClaim(claim, { quiet = false } = {}) {
+  try {
+    const result = await submitEconomyClaim(claim); applyAuthoritativeEconomy(result);
+    state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims).filter((item) => item.operationId !== claim.operationId);
+    if (claim.type === 'weekly' && state.weeklyChallenge?.weekKey === result.weekKey && !state.weeklyChallenge.rewardClaimed) {
+      const challenge = WEEKLY_CHALLENGES.find((item) => item.id === result.challengeId); if (challenge) finalizeWeeklyCompletion(challenge, false);
+    }
+    saveState(); return result;
+  } catch (error) {
+    if (!isRetryableEconomyError(error)) { state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims).filter((item) => item.operationId !== claim.operationId); saveState(); }
+    if (!quiet) showToast(isRetryableEconomyError(error) ? "Reward pending — we'll retry when your account reconnects." : (error.message || 'Reward claim was rejected.'));
+    throw error;
+  }
+}
+async function retryPendingEconomyClaims() {
+  if (!signedInEconomyPlayer() || !authoritativeEconomyReady) return;
+  for (const claim of [...normalizePendingEconomyClaims(state.pendingEconomyClaims)]) {
+    try { await resolveEconomyClaim(claim, { quiet: true }); }
+    catch (error) { if (isRetryableEconomyError(error)) break; }
+  }
+}
+
+async function hydrateAuthoritativeEconomy() {
+  const economy = await economyApi.bootstrap();
+  applyAuthoritativeEconomy(economy);
+  await retryPendingEconomyClaims();
+  await savePlayerDataToCloud();
+}
+
+function showEconomyFailure(error) {
+  console.error('Economy request failed:', error?.code || error?.message || error);
+  showModal('Economy Service Unavailable', error?.status === 402 ? error.message : 'Economy service temporarily unavailable.\nPlease try again.', [{ label: 'Got it', primary: true }], '🪙');
+}
+
 async function syncPlayerProfileToCloud(user, providerName) {
   const { db, firestoreMod } = await getFirebaseContext();
 
@@ -645,6 +782,7 @@ function getCloudSavePayload() {
     weeklyChallengeStats: normalizeWeeklyChallengeStats(state.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(state.lifetimeStats),
     achievements: normalizeAchievements(state.achievements),
+    pendingEconomyClaims: normalizePendingEconomyClaims(state.pendingEconomyClaims),
   };
 }
 
@@ -722,6 +860,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       weeklyChallengeStats: normalizeWeeklyChallengeStats(cloud.weeklyChallengeStats),
       lifetimeStats: normalizeLifetimeStats(cloud.lifetimeStats),
       achievements: normalizeAchievements(cloud.achievements),
+      pendingEconomyClaims: normalizePendingEconomyClaims(cloud.pendingEconomyClaims),
     };
 
     saveLocalState();
@@ -743,6 +882,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     weeklyChallengeStats: normalizeWeeklyChallengeStats(localBeforeSignIn.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(localBeforeSignIn.lifetimeStats),
     achievements: normalizeAchievements(localBeforeSignIn.achievements),
+    pendingEconomyClaims: [],
   };
 
   saveLocalState();
@@ -771,6 +911,7 @@ function loadState() {
     loaded.weeklyChallengeStats = normalizeWeeklyChallengeStats(saved?.weeklyChallengeStats);
     loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
     loaded.achievements = normalizeAchievements(saved?.achievements);
+    loaded.pendingEconomyClaims = normalizePendingEconomyClaims(saved?.pendingEconomyClaims);
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -809,7 +950,7 @@ function enterApp() {
 }
 
 function updateWallet() {
-  $('#coinCount').textContent = Number(state.coins || 0).toLocaleString();
+  $('#coinCount').textContent = signedInEconomyPlayer() && !authoritativeEconomyReady ? 'Syncing account…' : Number(state.coins || 0).toLocaleString();
   const toolsBalance = $('#jigsawToolsBalance');
   if (toolsBalance) toolsBalance.textContent = Number(state.coins || 0).toLocaleString();
 }
@@ -858,6 +999,7 @@ function requestJigsawTool(toolId) {
   if (!tool || !engine || !jigsawScreen.classList.contains('active')) return;
   const unavailable = engine.toolUnavailableReason(toolId);
   if (unavailable) { closeJigsawToolsPanel(); return showToast(toolFailureMessage(unavailable)); }
+  if (signedInEconomyPlayer() && !authoritativeEconomyReady) { closeJigsawToolsPanel(); return showEconomyFailure(); }
   if (state.coins < tool.cost) {
     closeJigsawToolsPanel();
     return showModal('Not Enough Coins', `Need ${tool.cost} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
@@ -869,22 +1011,34 @@ function requestJigsawTool(toolId) {
   ], tool.icon);
 }
 
-function activateJigsawTool(toolId) {
+async function activateJigsawTool(toolId) {
   const tool = JIGSAW_TOOLS[toolId];
   const engine = jigsawGame instanceof JigsawEngine ? jigsawGame : null;
   if (!tool || !engine || engine.completed) return;
   const unavailable = engine.toolUnavailableReason(toolId);
   if (unavailable) return showToast(toolFailureMessage(unavailable));
+  if (signedInEconomyPlayer() && !authoritativeEconomyReady) return showEconomyFailure();
   if (state.coins < tool.cost) return showModal('Not Enough Coins', `Need ${tool.cost} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
   if (toolId === 'hint') return engine.beginHintSelection();
-  if (!engine.activateTool(toolId)) return;
-  completeJigsawToolPurchase(engine, toolId);
+  if (signedInEconomyPlayer()) {
+    if (!await completeJigsawToolPurchase(engine, toolId)) return;
+    if (!engine.activateTool(toolId)) return showToast('Tool could not be activated');
+    if (engine.placed === engine.pieceCount) finishJigsaw(engine);
+    return;
+  }
+  if (engine.activateTool(toolId)) await completeJigsawToolPurchase(engine, toolId);
 }
 
-function completeJigsawToolPurchase(engine, toolId) {
+async function completeJigsawToolPurchase(engine, toolId) {
   const tool = JIGSAW_TOOLS[toolId];
-  if (!tool || engine.completed || state.coins < tool.cost) return false;
-  state.coins -= tool.cost;
+  if (!tool || engine.completed || state.coins < tool.cost || engine.toolSpendPending) return false;
+  if (signedInEconomyPlayer()) {
+    if (!authoritativeEconomyReady) { showEconomyFailure(); return false; }
+    engine.toolSpendPending = true;
+    try { applyAuthoritativeEconomy(await economyApi.spendTool(toolId, economyOperationId('tool'))); }
+    catch (error) { showEconomyFailure(error); return false; }
+    finally { engine.toolSpendPending = false; }
+  } else state.coins -= tool.cost;
   engine.assisted = true;
   engine.toolsUsed[tool.counter] += 1;
   engine.coinsSpentOnTools += tool.cost;
@@ -905,6 +1059,7 @@ function navigate(view) {
   currentView = view;
   $$('.nav-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.nav === view));
   renderView();
+  if ((view === 'home' || view === 'profile') && signedInEconomyPlayer()) retryPendingEconomyClaims().catch(() => {});
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -975,7 +1130,7 @@ function recordDailyChallengeCompletion(engine, seconds, date = new Date()) {
   }
 
   state.dailyChallengeStats = stats;
-  return { eligible: true, firstToday, bonus: firstToday ? DAILY_CHALLENGE.bonusCoins : 0, statsChanged };
+  return { eligible: true, firstToday, bonus: firstToday && !signedInEconomyPlayer() ? DAILY_CHALLENGE.bonusCoins : 0, statsChanged };
 }
 
 function launchDailyChallenge() {
@@ -1010,6 +1165,7 @@ function weeklyTimeRemaining(date = new Date()) {
 function renderHome() {
   const weeklyReset = ensureWeeklyChallenge();
   if (weeklyReset) saveState();
+  else if (state.weeklyChallenge.completed && !state.weeklyChallenge.rewardClaimed) evaluateWeeklyChallenge();
   const starterPuzzles = PUZZLES.filter((p) => p.pack === 'starter');
   const completedUnique = starterPuzzles.filter((p) => completionCountForPuzzle(p.id) > 0).length;
   const daily = currentDailyChallenge();
@@ -1214,9 +1370,18 @@ function renderShop() {
   $$('[data-buy-pack]').forEach((btn) => btn.addEventListener('click', () => buyPack(btn.dataset.buyPack)));
 }
 
-function buyPack(packId) {
+async function buyPack(packId) {
   const pack = PACKS.find((p) => p.id === packId);
   if (!pack || !pack.available) return;
+  if (signedInEconomyPlayer()) {
+    if (!authoritativeEconomyReady) return showEconomyFailure();
+    try {
+      const result = await economyApi.purchasePack(packId, economyOperationId('pack'));
+      applyAuthoritativeEconomy(result); evaluateAchievements(); saveState();
+      showToast(result.alreadyOwned ? `${pack.title} already owned` : `${pack.title} unlocked!`); renderShop();
+    } catch (error) { showEconomyFailure(error); }
+    return;
+  }
   if (state.coins < pack.price) return showModal('Not Enough Coins', `You need ${pack.price - state.coins} more coins for this pack.`, [{ label: 'Got it', primary: true }], '🪙');
   state.coins -= pack.price;
   state.purchasedPacks.push(pack.id);
@@ -1261,6 +1426,7 @@ function confirmCosmeticPurchase(id) {
   state.cosmetics = normalizeCosmetics(state.cosmetics);
   const owned = item.category === 'tables' ? state.cosmetics.ownedTables : state.cosmetics.ownedEffects;
   if (owned.includes(id)) return renderCosmetics();
+  if (signedInEconomyPlayer() && !authoritativeEconomyReady) return showEconomyFailure();
   if (state.coins < item.coinPrice) return showModal('Not Enough Coins', `Need ${item.coinPrice} coins — you have ${state.coins}.`, [{ label: 'Got it', primary: true }], '🪙');
   showModal(`Unlock ${item.title}?`, `Unlock ${item.title} for ${item.coinPrice} coins?`, [
     { label: 'Cancel' },
@@ -1268,12 +1434,25 @@ function confirmCosmeticPurchase(id) {
   ], '✨');
 }
 
-function purchaseCosmetic(id) {
+async function purchaseCosmetic(id) {
   const item = cosmeticById(id);
   if (!item || item.free) return false;
   state.cosmetics = normalizeCosmetics(state.cosmetics);
   const owned = item.category === 'tables' ? state.cosmetics.ownedTables : state.cosmetics.ownedEffects;
-  if (owned.includes(id) || state.coins < item.coinPrice) return false;
+  if (owned.includes(id)) return false;
+  if (signedInEconomyPlayer()) {
+    if (!authoritativeEconomyReady) { showEconomyFailure(); return false; }
+    try {
+      const result = await economyApi.purchaseCosmetic(item.category, id, economyOperationId('cosmetic'));
+      applyAuthoritativeEconomy(result);
+      if (item.category === 'tables') state.cosmetics.equippedTable = id;
+      else state.cosmetics.equippedEffect = id;
+      evaluateAchievements(); saveState(); showToast(`${item.title} unlocked and equipped!`);
+      if (currentView === 'cosmetics') renderCosmetics();
+      return true;
+    } catch (error) { showEconomyFailure(error); return false; }
+  }
+  if (state.coins < item.coinPrice) return false;
   state.coins -= item.coinPrice;
   owned.push(id);
   if (item.category === 'tables') state.cosmetics.equippedTable = id;
@@ -1408,7 +1587,11 @@ function renderProfile() {
     console.error('Firebase sign-out failed:', error);
   }
 
-  state.profile = structuredClone(defaultState.profile);
+  authoritativeEconomyReady = false;
+  try { state = { ...structuredClone(defaultState), ...JSON.parse(localStorage.getItem(GUEST_STORAGE_KEY)), profile: structuredClone(defaultState.profile) }; }
+  catch { state = structuredClone(defaultState); }
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  state.pendingEconomyClaims = [];
   saveLocalState();
   renderProfile();
 
@@ -1523,7 +1706,7 @@ function selectTile(pos) {
   if (game.board.every((v, i) => v === i)) finishGame();
 }
 
-function finishGame() {
+async function finishGame() {
   if (!game || game.completed) return;
   game.completed = true;
   clearInterval(timerHandle);
@@ -1532,14 +1715,19 @@ function finishGame() {
 
   const key = completionKey('swap', game.puzzle.id, state.difficulty);
   const firstClear = !state.completed[key];
-  const reward = firstClear ? game.diff.reward : Math.max(5, Math.round(game.diff.reward * 0.2));
+  let reward = firstClear ? game.diff.reward : Math.max(5, Math.round(game.diff.reward * 0.2));
+  let rewardUnavailable = false;
   const prior = state.completed[key];
   state.completed[key] = {
     bestSeconds: prior ? Math.min(prior.bestSeconds, game.seconds) : game.seconds,
     bestMoves: prior ? Math.min(prior.bestMoves, game.moves) : game.moves,
     clears: (prior?.clears || 0) + 1,
   };
-  state.coins += reward;
+  if (signedInEconomyPlayer()) {
+    const claim = queueEconomyClaim('puzzle', { mode: 'swap', puzzleId: game.puzzle.id, difficulty: state.difficulty, elapsedSeconds: game.seconds });
+    try { const result = await resolveEconomyClaim(claim); reward = result.coinsAwarded; }
+    catch { reward = 0; rewardUnavailable = true; }
+  } else state.coins += reward;
   state.totalMoves = (state.totalMoves || 0) + game.moves;
   state.totalSeconds = (state.totalSeconds || 0) + game.seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
@@ -1549,7 +1737,7 @@ function finishGame() {
 
   showModal(
     'Puzzle Complete!',
-    `${formatTime(game.seconds)} · ${game.moves} moves · ${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`,
+    `${formatTime(game.seconds)} · ${game.moves} moves · ${rewardUnavailable ? "Reward pending — we'll retry when your account reconnects." : `${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`}`,
     [
       { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); puzzleFlow = { step: 'puzzle', puzzleId: null }; currentView = 'puzzles'; renderView(); } },
       { label: 'Play Again', primary: true, action: () => startGame(game.puzzle) },
@@ -1655,7 +1843,7 @@ function jigsawTimeBonus(difficulty, seconds) {
   return Math.max(bonus.minCoins, Math.min(bonus.maxCoins, Math.ceil(bonus.minCoins + (bonus.maxCoins - bonus.minCoins) * (bonus.slowestSeconds - seconds) / (bonus.slowestSeconds - bonus.fastestSeconds))));
 }
 
-function finishJigsaw(engine) {
+async function finishJigsaw(engine) {
   if (jigsawGame !== engine || engine.completed) return;
   engine.completed = true;
   closeJigsawToolsPanel();
@@ -1664,10 +1852,12 @@ function finishJigsaw(engine) {
   engine.safelyTriggerCosmeticEffect({ x: engine.board.x + engine.board.width / 2, y: engine.board.y + engine.board.height / 2 }, true);
   engine.renderCompleted();
   const seconds = engine.seconds;
-  const baseReward = engine.config.reward;
-  const timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
+  let baseReward = engine.config.reward;
+  let timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
   const dailyResult = recordDailyChallengeCompletion(engine, seconds);
-  const reward = baseReward + timeBonus + dailyResult.bonus;
+  let dailyBonus = dailyResult.bonus;
+  let reward = baseReward + timeBonus + dailyBonus;
+  let rewardUnavailable = false;
   const key = completionKey('jigsaw', engine.puzzle.id, engine.difficulty);
   const prior = state.completed[key];
   state.completed[key] = {
@@ -1678,7 +1868,16 @@ function finishJigsaw(engine) {
     toolsUsed: { ...engine.toolsUsed },
     coinsSpentOnTools: engine.coinsSpentOnTools,
   };
-  state.coins += reward;
+  if (signedInEconomyPlayer()) {
+    const puzzleClaim = queueEconomyClaim('puzzle', { mode: 'jigsaw', puzzleId: engine.puzzle.id, difficulty: engine.difficulty, elapsedSeconds: seconds });
+    try { const puzzleReward = await resolveEconomyClaim(puzzleClaim); baseReward = puzzleReward.baseReward; timeBonus = puzzleReward.timeBonus; reward = puzzleReward.coinsAwarded; }
+    catch { reward = 0; rewardUnavailable = true; }
+    if (dailyResult.eligible) {
+      const dailyClaim = queueEconomyClaim('daily', { puzzleId: engine.puzzle.id, difficulty: engine.difficulty }, `daily:${engine.dailyChallenge.dateKey}`);
+      try { const dailyReward = await resolveEconomyClaim(dailyClaim); dailyBonus = dailyReward.replayed ? 0 : dailyReward.coinsAwarded; reward += dailyBonus; }
+      catch { dailyBonus = 0; rewardUnavailable = true; }
+    }
+  } else state.coins += reward;
   state.totalMoves = (state.totalMoves || 0) + engine.moves;
   state.totalSeconds = (state.totalSeconds || 0) + seconds;
   state.puzzlesCompleted = (state.puzzlesCompleted || 0) + 1;
@@ -1689,8 +1888,8 @@ function finishJigsaw(engine) {
   setTimeout(() => showModal(
     dailyResult.eligible ? 'Daily Challenge Complete!' : 'Jigsaw Complete!',
     dailyResult.eligible
-      ? `${formatTime(seconds)} · ${engine.moves} moves\nBase Reward       +${baseReward}\nTime Bonus        +${timeBonus}\nDaily Bonus       ${dailyResult.bonus ? `+${dailyResult.bonus}` : 'Already claimed'}\nTotal             +${reward}\n\n🔥 Daily Streak: ${state.dailyChallengeStats.currentStreak}`
-      : `${formatTime(seconds)} · ${engine.moves} moves\nBase reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`,
+      ? `${formatTime(seconds)} · ${engine.moves} moves\nBase Reward       +${baseReward}\nTime Bonus        +${timeBonus}\nDaily Bonus       ${dailyBonus ? `+${dailyBonus}` : 'Already claimed or pending'}\nTotal             ${rewardUnavailable ? 'Reward pending — reconnect to retry' : `+${reward}`}\n\n🔥 Daily Streak: ${state.dailyChallengeStats.currentStreak}`
+      : `${formatTime(seconds)} · ${engine.moves} moves\n${rewardUnavailable ? 'Reward pending — reconnect to retry' : `Base reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`}`,
     [
       { label: dailyResult.eligible ? 'Back Home' : 'Back to Puzzles', action: dailyResult.eligible ? returnFromDailyChallenge : returnFromJigsaw },
       { label: 'Play Again', primary: true, action: () => {
@@ -1753,6 +1952,7 @@ class JigsawEngine {
     this.assisted = false;
     this.toolsUsed = { hints: 0, backgroundReveals: 0, edgeFinders: 0, autoPlaces: 0 };
     this.coinsSpentOnTools = 0;
+    this.toolSpendPending = false;
     this.hintSelectionActive = false;
     this.hintTarget = null;
     this.backgroundRevealUntil = 0;
@@ -2355,9 +2555,9 @@ class JigsawEngine {
     this.effectTimers.add(timer);
   }
 
-  activateHintForPiece(piece) {
+  async activateHintForPiece(piece) {
     if (!this.hintSelectionActive || !piece || piece.placed) return false;
-    if (!completeJigsawToolPurchase(this, 'hint')) return false;
+    if (!await completeJigsawToolPurchase(this, 'hint')) return false;
     this.cancelHintSelection(false);
     const effect = { pieceId: piece.id, until: performance.now() + 4800 };
     this.setTimedEffect('hintTarget', effect, 4800);
@@ -2844,6 +3044,7 @@ class JigsawEngine {
 }
 
 async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
+  authoritativeEconomyReady = false;
   state.profile = {
     provider: providerName,
     name:
@@ -2870,6 +3071,18 @@ async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
     console.error('Firestore sync failed:', cloudError);
   }
 
+  try {
+    await hydrateAuthoritativeEconomy();
+  } catch (economyError) {
+    console.error('Authoritative economy hydration failed:', economyError?.code || economyError?.message);
+    authoritativeEconomyReady = false;
+    state.coins = 0;
+    state.purchasedPacks = ['starter'];
+    state.cosmetics = normalizeCosmetics();
+    saveLocalState();
+    cloudStatus = 'economy-unavailable';
+  }
+
   await hydrateActiveJigsawSave();
   enterApp();
   return cloudStatus;
@@ -2886,7 +3099,9 @@ function showCloudSignInToast(providerName, cloudStatus) {
     );
   } else {
     showToast(
-      `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
+      cloudStatus === 'economy-unavailable'
+        ? `Signed in with ${capitalize(providerName)} · Economy sync unavailable`
+        : `Signed in with ${capitalize(providerName)} · Cloud save unavailable`
     );
   }
 }
@@ -2914,6 +3129,7 @@ async function signInWithProvider(providerName) {
 
   // Preserve progress already stored on this device.
   const localBeforeSignIn = structuredClone(state);
+  if (!signedInEconomyPlayer()) localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(localBeforeSignIn));
 
   let auth;
   let authMod;
