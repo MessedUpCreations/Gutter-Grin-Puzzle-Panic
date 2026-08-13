@@ -1,17 +1,16 @@
 # Gutter Grin: Puzzle Panic
 
-A dependency-free, mobile-friendly browser puzzle prototype built from the five supplied Gutter Grin artworks.
+A dependency-free, mobile-friendly browser puzzle game. Current public release: **1.0.0**.
 
-## Included now
+## Puzzle Panic 1.0
 
-- Five separate launch puzzles in one free Starter Pack.
-- Tap/click-to-swap puzzle gameplay that works on desktop and touch screens.
-- Easy 3x3, Normal 4x4, Hard 5x5, and Insane 6x6 difficulty levels.
-- Timer, move counter, preview button, reshuffle, completion tracking, and coin rewards.
-- Guest play with progress saved in browser `localStorage`.
-- Coin-based pack shop and cosmetics.
-- Google and Facebook authentication code path prepared through Firebase Auth.
-- PWA manifest and service worker for installable/offline play after deployment over HTTPS.
+- Swap Puzzle and Classic Jigsaw across 20 artworks in four packs.
+- Jigsaw difficulties: Easy (52), Normal (252), Hard (500), and Insane (1,000 pieces), with connected groups, zoom/pan/pinch controls, and Save & Continue.
+- Guest play with local persistence, plus Firebase Google/Facebook accounts and cloud persistence.
+- Daily and Weekly Challenges, player profiles, achievements, Jigsaw Tools, and table/effect cosmetics.
+- Coin pack unlocks and a fail-closed, server-authoritative signed-in economy; guest economy remains local.
+- First-run onboarding, permanent Help, persistent sound/reduced-motion settings, offline/reconnect feedback, and friendly recovery states.
+- Installable PWA support with cached game assets, an update-available prompt, and `/api/` excluded from Cache Storage.
 
 ## Run locally
 

@@ -20,5 +20,5 @@ test('client queues earned rewards only and service worker bypasses APIs', () =>
   assert.match(app, /if \(signedInEconomyPlayer\(\)\)[\s\S]*?economyApi\.purchaseCosmetic/);
   assert.match(app, /if \(signedInEconomyPlayer\(\)\)[\s\S]*?economyApi\.spendTool/);
   assert.match(serviceWorker, /pathname\.startsWith\('\/api\/'\)\) return/);
-  assert.match(serviceWorker, /v23/);
+  assert.match(serviceWorker, /v24/);
 });

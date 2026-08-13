@@ -12,6 +12,10 @@
   <title>Gutter Grin: Puzzle Panic</title>
 </head>
 <body>
+  <div id="networkStatus" class="network-status" role="status" aria-live="polite" hidden></div>
+  <div id="updateNotice" class="update-notice" role="status" hidden>
+    <span>Update available</span><button id="refreshAppBtn" class="btn subtle" type="button">Refresh</button>
+  </div>
   <div id="app" class="app-shell">
     <section id="authScreen" class="screen auth-screen active">
       <div class="auth-card">
@@ -142,6 +146,20 @@
       <p id="modalBody"></p>
       <div id="modalActions" class="modal-actions"></div>
     </div>
+  </div>
+
+  <div id="onboardingBackdrop" class="modal-backdrop onboarding-backdrop" hidden>
+    <section class="modal onboarding" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" aria-describedby="onboardingBody">
+      <p class="eyebrow" id="onboardingStep">STEP 1 OF 4</p>
+      <div class="modal-icon" id="onboardingIcon" aria-hidden="true">GG</div>
+      <h2 id="onboardingTitle">Welcome</h2>
+      <div id="onboardingBody"></div>
+      <div class="onboarding-progress" aria-hidden="true"></div>
+      <div class="modal-actions onboarding-actions">
+        <button id="skipOnboardingBtn" class="btn ghost" type="button">Skip</button>
+        <button id="nextOnboardingBtn" class="btn primary" type="button">Next</button>
+      </div>
+    </section>
   </div>
 
   <script src="config.js"></script>
