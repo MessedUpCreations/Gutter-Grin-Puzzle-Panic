@@ -325,6 +325,7 @@ const GAME_MODES = {
 };
 
 const STORAGE_KEY = 'gutterGrinPuzzlePanic.v1';
+const GUEST_STORAGE_KEY = 'gutterGrinPuzzlePanic.guest.v1';
 const JIGSAW_SAVE_KEY = 'gutterGrinPuzzlePanic.jigsawActive.v1';
 const defaultState = {
   profile: { provider: 'guest', name: 'Guest Player', uid: null },
@@ -342,6 +343,7 @@ const defaultState = {
   weeklyChallengeStats: { ...DEFAULT_WEEKLY_CHALLENGE_STATS },
   lifetimeStats: { totalJigsawPiecesPlaced: 0, toolsUsedLifetime: { ...DEFAULT_LIFETIME_STATS.toolsUsedLifetime } },
   achievements: { unlocked: {} },
+  pendingEconomyClaims: [],
 };
 
 let state = loadState();
@@ -408,12 +410,10 @@ function evaluateWeeklyChallenge(date = new Date()) {
   weekly.completed = true;
   if (signedInEconomyPlayer()) {
     saveLocalState();
+    const claim = queueEconomyClaim('weekly', { challengeId: challenge.id }, `weekly:${weekly.weekKey}`);
     if (!authoritativeEconomyReady || weeklyClaimPendingKey === weekly.weekKey) return false;
     weeklyClaimPendingKey = weekly.weekKey;
-    economyApi.claimWeekly(challenge.id).then((result) => {
-      applyAuthoritativeEconomy(result);
-      if (state.weeklyChallenge.weekKey === result.weekKey && !state.weeklyChallenge.rewardClaimed) finalizeWeeklyCompletion(challenge, false);
-    }).catch(showEconomyFailure).finally(() => { weeklyClaimPendingKey = null; });
+    resolveEconomyClaim(claim).catch(() => {}).finally(() => { weeklyClaimPendingKey = null; });
     return false;
   }
   finalizeWeeklyCompletion(challenge, true);
@@ -642,6 +642,24 @@ function applyAuthoritativeEconomy(result) {
   return result;
 }
 
+function normalizePendingEconomyClaims(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.filter((claim) => {
+    if (!claim || !['puzzle', 'daily', 'weekly'].includes(claim.type) || typeof claim.operationId !== 'string'
+        || !/^[A-Za-z0-9:_-]{8,160}$/.test(claim.operationId) || !claim.payload || typeof claim.payload !== 'object'
+        || Array.isArray(claim.payload) || seen.has(claim.operationId)) return false;
+    seen.add(claim.operationId); return true;
+  }).map((claim) => {
+    const payload = claim.type === 'puzzle'
+      ? { mode: claim.payload.mode, puzzleId: claim.payload.puzzleId, difficulty: claim.payload.difficulty, elapsedSeconds: claim.payload.elapsedSeconds }
+      : claim.type === 'daily'
+        ? { puzzleId: claim.payload.puzzleId, difficulty: claim.payload.difficulty }
+        : { challengeId: claim.payload.challengeId };
+    return { operationId: claim.operationId, type: claim.type, payload, createdAt: Number(claim.createdAt) || Date.now() };
+  });
+}
+
 const economyApi = Object.freeze({
   async request(path, { method = 'POST', body } = {}) {
     const { auth } = await getFirebaseContext();
@@ -653,9 +671,7 @@ const economyApi = Object.freeze({
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     };
-    let response;
-    try { response = await fetch(`/api/economy/${path}`, options); }
-    catch { response = await fetch(`/api/economy/${path}`, options); }
+    const response = await fetch(`/api/economy/${path}`, options);
     let payload = null;
     try { payload = await response.json(); } catch { /* Safe generic error below. */ }
     if (!response.ok) {
@@ -674,9 +690,45 @@ const economyApi = Object.freeze({
   claimWeekly(challengeId) { return this.request('claim-weekly', { body: { challengeId } }); },
 });
 
+function isRetryableEconomyError(error) { return !error?.status || error.status === 408 || error.status === 429 || error.status >= 500; }
+function queueEconomyClaim(type, payload, operationId = economyOperationId(type)) {
+  state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims);
+  let claim = state.pendingEconomyClaims.find((item) => item.operationId === operationId);
+  if (!claim) { claim = { operationId, type, payload: { ...payload }, createdAt: Date.now() }; state.pendingEconomyClaims.push(claim); saveLocalState(); }
+  return claim;
+}
+async function submitEconomyClaim(claim) {
+  if (claim.type === 'puzzle') return economyApi.rewardPuzzle(claim.payload, claim.operationId);
+  if (claim.type === 'daily') return economyApi.claimDaily(claim.payload.puzzleId, claim.payload.difficulty);
+  if (claim.type === 'weekly') return economyApi.claimWeekly(claim.payload.challengeId);
+  throw new Error('Unknown pending economy claim.');
+}
+async function resolveEconomyClaim(claim, { quiet = false } = {}) {
+  try {
+    const result = await submitEconomyClaim(claim); applyAuthoritativeEconomy(result);
+    state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims).filter((item) => item.operationId !== claim.operationId);
+    if (claim.type === 'weekly' && state.weeklyChallenge?.weekKey === result.weekKey && !state.weeklyChallenge.rewardClaimed) {
+      const challenge = WEEKLY_CHALLENGES.find((item) => item.id === result.challengeId); if (challenge) finalizeWeeklyCompletion(challenge, false);
+    }
+    saveState(); return result;
+  } catch (error) {
+    if (!isRetryableEconomyError(error)) { state.pendingEconomyClaims = normalizePendingEconomyClaims(state.pendingEconomyClaims).filter((item) => item.operationId !== claim.operationId); saveState(); }
+    if (!quiet) showToast(isRetryableEconomyError(error) ? "Reward pending — we'll retry when your account reconnects." : (error.message || 'Reward claim was rejected.'));
+    throw error;
+  }
+}
+async function retryPendingEconomyClaims() {
+  if (!signedInEconomyPlayer() || !authoritativeEconomyReady) return;
+  for (const claim of [...normalizePendingEconomyClaims(state.pendingEconomyClaims)]) {
+    try { await resolveEconomyClaim(claim, { quiet: true }); }
+    catch (error) { if (isRetryableEconomyError(error)) break; }
+  }
+}
+
 async function hydrateAuthoritativeEconomy() {
   const economy = await economyApi.bootstrap();
   applyAuthoritativeEconomy(economy);
+  await retryPendingEconomyClaims();
   await savePlayerDataToCloud();
 }
 
@@ -730,6 +782,7 @@ function getCloudSavePayload() {
     weeklyChallengeStats: normalizeWeeklyChallengeStats(state.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(state.lifetimeStats),
     achievements: normalizeAchievements(state.achievements),
+    pendingEconomyClaims: normalizePendingEconomyClaims(state.pendingEconomyClaims),
   };
 }
 
@@ -807,6 +860,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       weeklyChallengeStats: normalizeWeeklyChallengeStats(cloud.weeklyChallengeStats),
       lifetimeStats: normalizeLifetimeStats(cloud.lifetimeStats),
       achievements: normalizeAchievements(cloud.achievements),
+      pendingEconomyClaims: normalizePendingEconomyClaims(cloud.pendingEconomyClaims),
     };
 
     saveLocalState();
@@ -828,6 +882,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     weeklyChallengeStats: normalizeWeeklyChallengeStats(localBeforeSignIn.weeklyChallengeStats),
     lifetimeStats: normalizeLifetimeStats(localBeforeSignIn.lifetimeStats),
     achievements: normalizeAchievements(localBeforeSignIn.achievements),
+    pendingEconomyClaims: [],
   };
 
   saveLocalState();
@@ -856,6 +911,7 @@ function loadState() {
     loaded.weeklyChallengeStats = normalizeWeeklyChallengeStats(saved?.weeklyChallengeStats);
     loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
     loaded.achievements = normalizeAchievements(saved?.achievements);
+    loaded.pendingEconomyClaims = normalizePendingEconomyClaims(saved?.pendingEconomyClaims);
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -894,7 +950,7 @@ function enterApp() {
 }
 
 function updateWallet() {
-  $('#coinCount').textContent = Number(state.coins || 0).toLocaleString();
+  $('#coinCount').textContent = signedInEconomyPlayer() && !authoritativeEconomyReady ? 'Syncing account…' : Number(state.coins || 0).toLocaleString();
   const toolsBalance = $('#jigsawToolsBalance');
   if (toolsBalance) toolsBalance.textContent = Number(state.coins || 0).toLocaleString();
 }
@@ -1003,6 +1059,7 @@ function navigate(view) {
   currentView = view;
   $$('.nav-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.nav === view));
   renderView();
+  if ((view === 'home' || view === 'profile') && signedInEconomyPlayer()) retryPendingEconomyClaims().catch(() => {});
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -1530,7 +1587,11 @@ function renderProfile() {
     console.error('Firebase sign-out failed:', error);
   }
 
-  state.profile = structuredClone(defaultState.profile);
+  authoritativeEconomyReady = false;
+  try { state = { ...structuredClone(defaultState), ...JSON.parse(localStorage.getItem(GUEST_STORAGE_KEY)), profile: structuredClone(defaultState.profile) }; }
+  catch { state = structuredClone(defaultState); }
+  state.cosmetics = normalizeCosmetics(state.cosmetics);
+  state.pendingEconomyClaims = [];
   saveLocalState();
   renderProfile();
 
@@ -1663,10 +1724,9 @@ async function finishGame() {
     clears: (prior?.clears || 0) + 1,
   };
   if (signedInEconomyPlayer()) {
-    try {
-      const result = await economyApi.rewardPuzzle({ mode: 'swap', puzzleId: game.puzzle.id, difficulty: state.difficulty, elapsedSeconds: game.seconds }, economyOperationId('puzzle'));
-      applyAuthoritativeEconomy(result); reward = result.coinsAwarded;
-    } catch (error) { reward = 0; rewardUnavailable = true; showEconomyFailure(error); }
+    const claim = queueEconomyClaim('puzzle', { mode: 'swap', puzzleId: game.puzzle.id, difficulty: state.difficulty, elapsedSeconds: game.seconds });
+    try { const result = await resolveEconomyClaim(claim); reward = result.coinsAwarded; }
+    catch { reward = 0; rewardUnavailable = true; }
   } else state.coins += reward;
   state.totalMoves = (state.totalMoves || 0) + game.moves;
   state.totalSeconds = (state.totalSeconds || 0) + game.seconds;
@@ -1677,7 +1737,7 @@ async function finishGame() {
 
   showModal(
     'Puzzle Complete!',
-    `${formatTime(game.seconds)} · ${game.moves} moves · ${rewardUnavailable ? 'Reward unavailable — try again later' : `${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`}`,
+    `${formatTime(game.seconds)} · ${game.moves} moves · ${rewardUnavailable ? "Reward pending — we'll retry when your account reconnects." : `${firstClear ? 'First-clear bonus' : 'Replay reward'}: +${reward} coins`}`,
     [
       { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); puzzleFlow = { step: 'puzzle', puzzleId: null }; currentView = 'puzzles'; renderView(); } },
       { label: 'Play Again', primary: true, action: () => startGame(game.puzzle) },
@@ -1809,14 +1869,14 @@ async function finishJigsaw(engine) {
     coinsSpentOnTools: engine.coinsSpentOnTools,
   };
   if (signedInEconomyPlayer()) {
-    try {
-      const puzzleReward = await economyApi.rewardPuzzle({ mode: 'jigsaw', puzzleId: engine.puzzle.id, difficulty: engine.difficulty, elapsedSeconds: seconds }, economyOperationId('puzzle'));
-      applyAuthoritativeEconomy(puzzleReward); baseReward = puzzleReward.baseReward; timeBonus = puzzleReward.timeBonus; reward = puzzleReward.coinsAwarded;
-      if (dailyResult.eligible) {
-        const dailyReward = await economyApi.claimDaily(engine.puzzle.id, engine.difficulty);
-        applyAuthoritativeEconomy(dailyReward); dailyBonus = dailyReward.replayed ? 0 : dailyReward.coinsAwarded; reward += dailyBonus;
-      }
-    } catch (error) { rewardUnavailable = true; showEconomyFailure(error); }
+    const puzzleClaim = queueEconomyClaim('puzzle', { mode: 'jigsaw', puzzleId: engine.puzzle.id, difficulty: engine.difficulty, elapsedSeconds: seconds });
+    try { const puzzleReward = await resolveEconomyClaim(puzzleClaim); baseReward = puzzleReward.baseReward; timeBonus = puzzleReward.timeBonus; reward = puzzleReward.coinsAwarded; }
+    catch { reward = 0; rewardUnavailable = true; }
+    if (dailyResult.eligible) {
+      const dailyClaim = queueEconomyClaim('daily', { puzzleId: engine.puzzle.id, difficulty: engine.difficulty }, `daily:${engine.dailyChallenge.dateKey}`);
+      try { const dailyReward = await resolveEconomyClaim(dailyClaim); dailyBonus = dailyReward.replayed ? 0 : dailyReward.coinsAwarded; reward += dailyBonus; }
+      catch { dailyBonus = 0; rewardUnavailable = true; }
+    }
   } else state.coins += reward;
   state.totalMoves = (state.totalMoves || 0) + engine.moves;
   state.totalSeconds = (state.totalSeconds || 0) + seconds;
@@ -1828,8 +1888,8 @@ async function finishJigsaw(engine) {
   setTimeout(() => showModal(
     dailyResult.eligible ? 'Daily Challenge Complete!' : 'Jigsaw Complete!',
     dailyResult.eligible
-      ? `${formatTime(seconds)} · ${engine.moves} moves\nBase Reward       +${baseReward}\nTime Bonus        +${timeBonus}\nDaily Bonus       ${dailyBonus ? `+${dailyBonus}` : 'Already claimed'}\nTotal             ${rewardUnavailable ? 'Economy service unavailable' : `+${reward}`}\n\n🔥 Daily Streak: ${state.dailyChallengeStats.currentStreak}`
-      : `${formatTime(seconds)} · ${engine.moves} moves\n${rewardUnavailable ? 'Economy service unavailable · reward not granted locally' : `Base reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`}`,
+      ? `${formatTime(seconds)} · ${engine.moves} moves\nBase Reward       +${baseReward}\nTime Bonus        +${timeBonus}\nDaily Bonus       ${dailyBonus ? `+${dailyBonus}` : 'Already claimed or pending'}\nTotal             ${rewardUnavailable ? 'Reward pending — reconnect to retry' : `+${reward}`}\n\n🔥 Daily Streak: ${state.dailyChallengeStats.currentStreak}`
+      : `${formatTime(seconds)} · ${engine.moves} moves\n${rewardUnavailable ? 'Reward pending — reconnect to retry' : `Base reward: +${baseReward} · Time bonus: +${timeBonus} · Total earned: +${reward} coins`}`,
     [
       { label: dailyResult.eligible ? 'Back Home' : 'Back to Puzzles', action: dailyResult.eligible ? returnFromDailyChallenge : returnFromJigsaw },
       { label: 'Play Again', primary: true, action: () => {
@@ -2984,6 +3044,7 @@ class JigsawEngine {
 }
 
 async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
+  authoritativeEconomyReady = false;
   state.profile = {
     provider: providerName,
     name:
@@ -3068,6 +3129,7 @@ async function signInWithProvider(providerName) {
 
   // Preserve progress already stored on this device.
   const localBeforeSignIn = structuredClone(state);
+  if (!signedInEconomyPlayer()) localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(localBeforeSignIn));
 
   let auth;
   let authMod;
