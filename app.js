@@ -703,6 +703,10 @@ function applyAuthoritativeEconomy(result) {
   return result;
 }
 
+function visibleCosmetics() {
+  return signedInEconomyPlayer() && !authoritativeEconomyReady ? normalizeCosmetics() : normalizeCosmetics(state.cosmetics);
+}
+
 function normalizePendingEconomyClaims(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
@@ -828,16 +832,11 @@ async function syncPlayerProfileToCloud(user, providerName) {
   }
 }
 function getCloudSavePayload() {
-  return {
+  const payload = {
     version: 1,
-    coins: Number(state.coins || 0),
     selectedMode: GAME_MODES[state.selectedMode] ? state.selectedMode : 'swap',
     difficulty: state.difficulty || 'normal',
     completed: state.completed || {},
-    purchasedPacks: Array.isArray(state.purchasedPacks)
-      ? state.purchasedPacks
-      : ['starter'],
-    cosmetics: normalizeCosmetics(state.cosmetics),
     totalMoves: Number(state.totalMoves || 0),
     totalSeconds: Number(state.totalSeconds || 0),
     puzzlesCompleted: Number(state.puzzlesCompleted || 0),
@@ -849,6 +848,14 @@ function getCloudSavePayload() {
     pendingEconomyClaims: normalizePendingEconomyClaims(state.pendingEconomyClaims),
     preferences: normalizePreferences(state.preferences),
   };
+  // Signed-in economy mirrors are written only from confirmed server state.
+  // Omitting these merge fields preserves a legitimate legacy mirror while sync is pending/unavailable.
+  if (!signedInEconomyPlayer() || authoritativeEconomyReady) Object.assign(payload, {
+    coins: Number(state.coins || 0),
+    purchasedPacks: Array.isArray(state.purchasedPacks) ? state.purchasedPacks : ['starter'],
+    cosmetics: normalizeCosmetics(state.cosmetics),
+  });
+  return payload;
 }
 
 async function savePlayerDataToCloud() {
@@ -1543,7 +1550,7 @@ async function buyPack(packId) {
 }
 
 function renderCosmeticCard(item) {
-  const cosmetics = normalizeCosmetics(state.cosmetics);
+  const cosmetics = visibleCosmetics();
   const ownedList = item.category === 'tables' ? cosmetics.ownedTables : cosmetics.ownedEffects;
   const equippedId = item.category === 'tables' ? cosmetics.equippedTable : cosmetics.equippedEffect;
   const owned = ownedList.includes(item.id);
@@ -1561,8 +1568,8 @@ function renderCosmeticCard(item) {
 }
 
 function renderCosmetics() {
-  state.cosmetics = normalizeCosmetics(state.cosmetics);
-  viewHost.innerHTML = `<div class="section-head cosmetics-heading"><div><h3>Customize</h3><p>Jigsaw-only visual styles. Your Coins: <strong>${Number(state.coins).toLocaleString()}</strong></p></div></div>
+  const balance = signedInEconomyPlayer() && !authoritativeEconomyReady ? 'Syncing…' : Number(state.coins).toLocaleString();
+  viewHost.innerHTML = `<div class="section-head cosmetics-heading"><div><h3>Customize</h3><p>Jigsaw-only visual styles. Your Coins: <strong>${balance}</strong></p></div></div>
     <div class="section-head cosmetic-section-head"><div><h3>Puzzle Tables</h3><p>Procedural workspace themes.</p></div></div>
     <div class="cosmetic-grid">${COSMETICS.tables.map(renderCosmeticCard).join('')}</div>
     <div class="section-head cosmetic-section-head"><div><h3>Piece Effects</h3><p>Short feedback for successful connections and placements.</p></div></div>
@@ -1653,14 +1660,14 @@ function renderProfile() {
   const lifetime = normalizeLifetimeStats(state.lifetimeStats);
   const daily = normalizeDailyChallengeStats(state.dailyChallengeStats);
   const weeklyStats = normalizeWeeklyChallengeStats(state.weeklyChallengeStats);
-  const cosmetics = normalizeCosmetics(state.cosmetics);
+  const cosmetics = visibleCosmetics();
   const equippedTable = cosmeticById(cosmetics.equippedTable);
   const equippedEffect = cosmeticById(cosmetics.equippedEffect);
   const ownedCosmeticCount = cosmetics.ownedTables.length + cosmetics.ownedEffects.length;
   const entries = completionEntries();
   const jigsawCompletions = entries.filter(([key]) => key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
   const swapCompletions = entries.filter(([key]) => !key.startsWith('jigsaw:')).reduce((total, [, record]) => total + Number(record.clears || 0), 0);
-  const ownedPacks = PACKS.filter((pack) => pack.owned || state.purchasedPacks.includes(pack.id));
+  const ownedPacks = PACKS.filter(ownsPack);
   const unlockedIds = state.achievements.unlocked;
   const unlockedCount = ACHIEVEMENTS.filter((achievement) => unlockedIds[achievement.id]).length;
   const categoryNames = { general: 'General', difficulty: 'Difficulty', daily: 'Challenges', collections: 'Collections', tools: 'Tools' };
@@ -2124,7 +2131,7 @@ class JigsawEngine {
     this.backgroundRevealUntil = 0;
     this.edgeFinderUntil = 0;
     this.autoPlacePulse = null;
-    const cosmetics = normalizeCosmetics(state.cosmetics);
+    const cosmetics = visibleCosmetics();
     this.tableCosmetic = cosmeticById(cosmetics.equippedTable) || COSMETICS.tables[0];
     this.pieceEffect = cosmeticById(cosmetics.equippedEffect) || COSMETICS.effects[0];
     this.cosmeticBursts = [];
@@ -3245,9 +3252,8 @@ async function completeProviderSignIn(user, providerName, localBeforeSignIn) {
   } catch (economyError) {
     console.error('Authoritative economy hydration failed:', economyError?.code || economyError?.message);
     authoritativeEconomyReady = false;
-    state.coins = 0;
-    state.purchasedPacks = ['starter'];
-    state.cosmetics = normalizeCosmetics();
+    // Preserve the loaded legacy mirror in memory. Access remains fail-closed through
+    // authoritativeEconomyReady checks and visibleCosmetics() until hydration succeeds.
     saveLocalState();
     cloudStatus = 'economy-unavailable';
   }

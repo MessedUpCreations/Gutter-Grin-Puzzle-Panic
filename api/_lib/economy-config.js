@@ -41,7 +41,21 @@ function dailyForDate(date = new Date()) { const dateKey = utcDateKey(date); con
 function weeklyForDate(date = new Date()) { const weekKey = utcWeekKey(date); const week = Math.floor(Date.parse(`${weekKey}T00:00:00Z`) / 604800000); return { weekKey, ...WEEKLY[(stableHash('gutter-grin:weekly:v1') + week) % WEEKLY.length] }; }
 function jigsawTimeBonus(difficulty, seconds) { const rule = JIGSAW[difficulty]; if (rule.tiers) return rule.tiers.find(([max]) => seconds <= max)[1]; if (seconds <= rule.fastest) return rule.max; if (seconds > rule.slowest) return 0; return Math.max(rule.min, Math.min(rule.max, Math.ceil(rule.min + (rule.max - rule.min) * (rule.slowest - seconds) / (rule.slowest - rule.fastest)))); }
 function legacySwapClears(completed) { const source = completed && typeof completed === 'object' ? completed : {}; return Object.fromEntries(Object.entries(source).filter(([key, record]) => { const parts = key.split(':'); return parts.length === 2 && PUZZLE_IDS.includes(parts[0]) && Object.hasOwn(SWAP, parts[1]) && Number(record?.clears || 0) > 0; }).map(([key, record]) => [key, Math.floor(Number(record.clears))])); }
+function legacyEconomyFromSave(value = {}) {
+  const legacy = value && typeof value === 'object' ? value : {};
+  const cosmetics = legacy.cosmetics && typeof legacy.cosmetics === 'object' ? legacy.cosmetics : {};
+  return normalizeEconomy({
+    coins: legacy.coins,
+    // purchasedPacks + nested cosmetics are the shipped pre-authoritative schema.
+    // Top-level owned* fields support secure-era mirrors without trusting unknown IDs.
+    ownedPacks: Array.isArray(legacy.purchasedPacks) ? legacy.purchasedPacks : legacy.ownedPacks,
+    ownedTables: Array.isArray(cosmetics.ownedTables) ? cosmetics.ownedTables : legacy.ownedTables,
+    ownedEffects: Array.isArray(cosmetics.ownedEffects) ? cosmetics.ownedEffects : legacy.ownedEffects,
+    swapClears: legacySwapClears(legacy.completed),
+    migratedFromLegacy: true,
+  });
+}
 function normalizeEconomy(value = {}) { const ownedPacks = [...new Set(['starter', ...(Array.isArray(value.ownedPacks) ? value.ownedPacks : [])])].filter((id) => PACKS[id]); const ownedTables = [...new Set(['classic-table', ...(Array.isArray(value.ownedTables) ? value.ownedTables : [])])].filter((id) => Object.hasOwn(COSMETICS.tables, id)); const ownedEffects = [...new Set(['classic-effect', ...(Array.isArray(value.ownedEffects) ? value.ownedEffects : [])])].filter((id) => Object.hasOwn(COSMETICS.effects, id)); return { version: 1, coins: Number.isFinite(value.coins) && value.coins >= 0 ? Math.floor(value.coins) : STARTING_COINS, ownedPacks, ownedTables, ownedEffects, migratedFromLegacy: value.migratedFromLegacy === true, swapClears: value.swapClears && typeof value.swapClears === 'object' ? value.swapClears : {} }; }
 function publicEconomy(value) { const e = normalizeEconomy(value); return { coins: e.coins, ownedPacks: e.ownedPacks, ownedTables: e.ownedTables, ownedEffects: e.ownedEffects }; }
 
-module.exports = { PACKS, COSMETICS, TOOLS, SWAP, JIGSAW, PUZZLE_IDS, STARTING_COINS, LEGACY_MIGRATION_CUTOFF, normalizeEconomy, publicEconomy, utcDateKey, utcWeekKey, dailyForDate, weeklyForDate, jigsawTimeBonus, legacySwapClears };
+module.exports = { PACKS, COSMETICS, TOOLS, SWAP, JIGSAW, PUZZLE_IDS, STARTING_COINS, LEGACY_MIGRATION_CUTOFF, normalizeEconomy, legacyEconomyFromSave, publicEconomy, utcDateKey, utcWeekKey, dailyForDate, weeklyForDate, jigsawTimeBonus, legacySwapClears };
