@@ -19,6 +19,7 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 body { min-height: 100dvh; overscroll-behavior: none; }
 button, select { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline:3px solid var(--accent-2); outline-offset:3px; }
 
 .app-shell { min-height: 100dvh; }
 .screen { display: none; min-height: 100dvh; }
@@ -374,6 +375,28 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
 .toast { position:fixed; left:50%; bottom:92px; transform:translateX(-50%); background:#f3f3ef; color:#151518; border-radius:999px; padding:10px 15px; font-weight:800; font-size:12px; z-index:120; box-shadow:var(--shadow); animation:toast-in .2s ease; }
 @keyframes toast-in { from { opacity:0; transform:translate(-50%, 8px); } }
 
+.network-status,.update-notice { position:fixed; z-index:150; left:50%; top:calc(8px + env(safe-area-inset-top)); transform:translateX(-50%); width:min(calc(100% - 24px),620px); padding:10px 14px; border:1px solid var(--line); border-radius:13px; background:#222228; box-shadow:var(--shadow); text-align:center; font-size:12px; font-weight:800; }
+.network-status.offline { border-color:#80662d; color:#ffe49b; }
+.network-status.online { border-color:#4f7129; color:var(--accent-2); }
+.update-notice { top:auto; bottom:calc(84px + env(safe-area-inset-bottom)); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.update-notice[hidden],.network-status[hidden] { display:none; }
+.update-notice .btn { padding:8px 12px; }
+.app-footer { margin-top:32px; padding:22px 6px calc(8px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); color:var(--muted); text-align:center; }
+.app-footer > div { display:flex; flex-wrap:wrap; justify-content:center; gap:8px 18px; margin-bottom:9px; }
+.app-footer a { color:var(--accent-2); font-size:13px; font-weight:800; }
+.app-footer small { display:block; }
+.help-grid { display:grid; gap:12px; }
+.info-card,.settings-card { padding:18px; border:1px solid var(--line); border-radius:18px; background:var(--panel); }
+.info-card h4 { margin:0 0 7px; font-size:17px; }.info-card p { margin:0; color:var(--muted); line-height:1.55; }
+.setting-row { min-height:68px; display:flex; align-items:center; justify-content:space-between; gap:18px; padding:12px 4px; border-bottom:1px solid var(--line); }
+.setting-row:last-child { border-bottom:0; }.setting-row strong,.setting-row small { display:block; }.setting-row small { margin-top:4px; color:var(--muted); line-height:1.35; }
+.setting-row input[type="checkbox"] { width:48px; height:28px; flex:0 0 auto; accent-color:var(--accent-2); cursor:pointer; }
+.onboarding { width:min(100%,520px); }.onboarding .eyebrow { margin:0 0 12px; }.onboarding #onboardingBody { min-height:70px; color:var(--muted); line-height:1.55; }.onboarding #onboardingBody strong { color:var(--text); }
+.onboarding-progress { display:flex; justify-content:center; gap:7px; margin-top:16px; }.onboarding-progress span { width:24px; height:5px; border-radius:99px; background:var(--line); transition:background .15s ease; }.onboarding-progress span.active { background:var(--accent-2); }
+.onboarding-actions { grid-template-columns:1fr 1.4fr; }
+
+.reduced-motion *, .reduced-motion *::before, .reduced-motion *::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; }
+
 @media (min-width: 680px) {
   .view-host { padding-top:28px; }
   .puzzle-grid { grid-template-columns: repeat(3, minmax(0,1fr)); gap:16px; }
@@ -381,6 +404,7 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
   .mode-grid,.difficulty-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .profile-stat-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
   .achievement-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .help-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .bottom-nav { left:50%; right:auto; transform:translateX(-50%); width:min(560px,calc(100% - 28px)); bottom:14px; border:1px solid var(--line); border-radius:20px; padding:9px 10px; }
 }
 
@@ -407,4 +431,24 @@ h1 { margin: 0; font-size: clamp(42px, 11vw, 64px); line-height: .95; letter-spa
   .weekly-challenge-card { grid-template-columns:58px 1fr; gap:12px; padding:15px; }
   .weekly-challenge-icon { width:58px; height:58px; border-radius:15px; font-size:28px; }
   .cosmetic-card { grid-template-columns:86px 1fr; }.cosmetic-preview { width:86px; height:72px; }.cosmetic-action { grid-column:1 / -1; min-width:0; }.cosmetic-action .btn { width:100%; }
+}
+
+@media (max-width: 420px) {
+  .auth-screen { padding:calc(14px + env(safe-area-inset-top)) 12px calc(14px + env(safe-area-inset-bottom)); }
+  .auth-card { padding:22px 16px; border-radius:22px; }
+  .topbar { height:auto; min-height:64px; padding:calc(8px + env(safe-area-inset-top)) 12px 8px; }
+  .view-host { padding-inline:12px; }
+  .hero { padding:18px; min-height:205px; }
+  .mode-card { grid-template-columns:52px 1fr; padding:16px; min-height:150px; }.mode-icon { width:52px; height:52px; }
+  .pack-card { grid-template-columns:70px 1fr; }.pack-art { width:70px; height:70px; }.pack-price { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; }
+  .modal-backdrop { padding:10px; }.modal { max-height:calc(100dvh - 20px); overflow:auto; padding:20px 16px; border-radius:20px; }
+  .setting-row { align-items:flex-start; }.setting-row .btn { min-height:44px; }
+  .game-topbar { padding-top:calc(8px + env(safe-area-inset-top)); }
+  .jigsaw-controls { gap:6px; }.jigsaw-controls .btn { min-height:44px; padding:8px 10px; }.camera-controls { width:100%; }
+  .game-actions { flex-wrap:wrap; }.game-actions .btn { min-height:44px; }.game-tip { text-align:left; }
+  .toast { max-width:calc(100% - 24px); text-align:center; border-radius:14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not(.motion-enabled) *, :root:not(.motion-enabled) *::before, :root:not(.motion-enabled) *::after { scroll-behavior:auto; animation-duration:.01ms; animation-iteration-count:1; transition-duration:.01ms; }
 }

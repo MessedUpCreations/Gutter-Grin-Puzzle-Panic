@@ -324,6 +324,10 @@ const GAME_MODES = {
   jigsaw: { label: 'Classic Jigsaw', icon: '🧩', description: 'Piece together a traditional interlocking jigsaw before the clock beats you.', difficulties: JIGSAW_DIFFICULTIES },
 };
 
+const APP_VERSION = '1.0.0';
+const ONBOARDING_VERSION = 1;
+const GUTTER_GRIN_LINKS = Object.freeze({ shop: null, games: null, home: null });
+
 const STORAGE_KEY = 'gutterGrinPuzzlePanic.v1';
 const GUEST_STORAGE_KEY = 'gutterGrinPuzzlePanic.guest.v1';
 const JIGSAW_SAVE_KEY = 'gutterGrinPuzzlePanic.jigsawActive.v1';
@@ -344,6 +348,7 @@ const defaultState = {
   lifetimeStats: { totalJigsawPiecesPlaced: 0, toolsUsedLifetime: { ...DEFAULT_LIFETIME_STATS.toolsUsedLifetime } },
   achievements: { unlocked: {} },
   pendingEconomyClaims: [],
+  preferences: { soundEffects: true, reducedMotion: null, onboardingVersionSeen: 0 },
 };
 
 let state = loadState();
@@ -362,6 +367,60 @@ let jigsawCloudSaveTimer = null;
 let playerProgressCloudSaveTimer = null;
 const achievementNotificationQueue = [];
 let achievementNotificationActive = false;
+let lastFocusedBeforeModal = null;
+let waitingServiceWorker = null;
+
+function normalizePreferences(value) {
+  const saved = value && typeof value === 'object' ? value : {};
+  return {
+    soundEffects: saved.soundEffects !== false,
+    reducedMotion: typeof saved.reducedMotion === 'boolean' ? saved.reducedMotion : null,
+    onboardingVersionSeen: Math.max(0, Number(saved.onboardingVersionSeen) || 0),
+  };
+}
+
+function reducedMotionEnabled() {
+  return typeof state.preferences?.reducedMotion === 'boolean'
+    ? state.preferences.reducedMotion
+    : matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function applyMotionPreference() {
+  document.documentElement.classList.toggle('reduced-motion', reducedMotionEnabled());
+  document.documentElement.classList.toggle('motion-enabled', state.preferences?.reducedMotion === false);
+}
+
+const soundManager = (() => {
+  let context = null;
+  const lastPlayed = new Map();
+  const tones = {
+    pickup: [[220, .025, .025]], pieceSnap: [[440, .045, .06], [660, .04, .045]], placement: [[520, .05, .06]],
+    completion: [[392, .08, .08], [523, .1, .1], [784, .18, .13]], coin: [[740, .05, .07], [988, .09, .07]],
+    achievement: [[523, .08, .08], [659, .08, .08], [1047, .14, .1]], confirm: [[540, .05, .05]],
+  };
+  function unlock() {
+    if (!state.preferences.soundEffects || context) return;
+    try { context = new (window.AudioContext || window.webkitAudioContext)(); } catch { context = null; }
+  }
+  function play(name) {
+    if (!state.preferences.soundEffects) return;
+    if (!context) return;
+    const nowMs = performance.now();
+    if (nowMs - (lastPlayed.get(name) || 0) < (name === 'pieceSnap' ? 100 : 45)) return;
+    lastPlayed.set(name, nowMs);
+    try {
+      if (context.state === 'suspended') context.resume().catch(() => {});
+      const start = context.currentTime + .005;
+      (tones[name] || tones.confirm).forEach(([frequency, duration, volume], index) => {
+        const oscillator = context.createOscillator(), gain = context.createGain();
+        oscillator.type = name === 'completion' ? 'triangle' : 'sine'; oscillator.frequency.value = frequency;
+        const at = start + index * .07; gain.gain.setValueAtTime(.0001, at); gain.gain.exponentialRampToValueAtTime(volume, at + .008); gain.gain.exponentialRampToValueAtTime(.0001, at + duration);
+        oscillator.connect(gain).connect(context.destination); oscillator.start(at); oscillator.stop(at + duration + .02);
+      });
+    } catch { /* Sound is optional and must never interrupt play. */ }
+  }
+  return { unlock, play };
+})();
 
 function ensureWeeklyChallenge(date = new Date()) {
   const selection = weeklyChallengeForWeek(date);
@@ -472,6 +531,7 @@ function showNextAchievementNotification() {
   toast.setAttribute('role', 'status');
   toast.innerHTML = `<span>${achievement.icon}</span><div><small>🏆 ACHIEVEMENT UNLOCKED!</small><strong>${escapeHtml(achievement.title)}</strong><p>${escapeHtml(achievement.description)}</p></div>`;
   document.body.appendChild(toast);
+  soundManager.play('achievement');
   setTimeout(() => {
     toast.remove();
     achievementNotificationActive = false;
@@ -485,6 +545,7 @@ function showWeeklyChallengeNotification(challenge, streak) {
   toast.setAttribute('role', 'status');
   toast.innerHTML = `<span>${challenge.icon}</span><div><small>WEEKLY CHALLENGE COMPLETE!</small><strong>+${challenge.reward} coins</strong><p>${streak}-week streak</p></div>`;
   document.body.appendChild(toast);
+  soundManager.play('achievement');
   setTimeout(() => toast.remove(), 4200);
 }
 
@@ -734,7 +795,10 @@ async function hydrateAuthoritativeEconomy() {
 
 function showEconomyFailure(error) {
   console.error('Economy request failed:', error?.code || error?.message || error);
-  showModal('Economy Service Unavailable', error?.status === 402 ? error.message : 'Economy service temporarily unavailable.\nPlease try again.', [{ label: 'Got it', primary: true }], '🪙');
+  const message = !navigator.onLine
+    ? 'This signed-in purchase needs a connection. Your balance and ownership remain unchanged.'
+    : error?.status === 402 ? error.message : 'Economy service temporarily unavailable.\nPlease try again.';
+  showModal(navigator.onLine ? 'Economy Service Unavailable' : 'You’re Offline', message, [{ label: 'Got it', primary: true }], '🪙');
 }
 
 async function syncPlayerProfileToCloud(user, providerName) {
@@ -783,6 +847,7 @@ function getCloudSavePayload() {
     lifetimeStats: normalizeLifetimeStats(state.lifetimeStats),
     achievements: normalizeAchievements(state.achievements),
     pendingEconomyClaims: normalizePendingEconomyClaims(state.pendingEconomyClaims),
+    preferences: normalizePreferences(state.preferences),
   };
 }
 
@@ -861,6 +926,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
       lifetimeStats: normalizeLifetimeStats(cloud.lifetimeStats),
       achievements: normalizeAchievements(cloud.achievements),
       pendingEconomyClaims: normalizePendingEconomyClaims(cloud.pendingEconomyClaims),
+      preferences: normalizePreferences(cloud.preferences),
     };
 
     saveLocalState();
@@ -883,6 +949,7 @@ async function loadOrCreatePlayerSave(user, providerName, localBeforeSignIn) {
     lifetimeStats: normalizeLifetimeStats(localBeforeSignIn.lifetimeStats),
     achievements: normalizeAchievements(localBeforeSignIn.achievements),
     pendingEconomyClaims: [],
+    preferences: normalizePreferences(localBeforeSignIn.preferences),
   };
 
   saveLocalState();
@@ -912,6 +979,7 @@ function loadState() {
     loaded.lifetimeStats = normalizeLifetimeStats(saved?.lifetimeStats);
     loaded.achievements = normalizeAchievements(saved?.achievements);
     loaded.pendingEconomyClaims = normalizePendingEconomyClaims(saved?.pendingEconomyClaims);
+    loaded.preferences = normalizePreferences(saved?.preferences);
     return loaded;
   } catch {
     return structuredClone(defaultState);
@@ -947,6 +1015,7 @@ function showScreen(screen) {
 function enterApp() {
   showScreen(mainScreen);
   navigate('home');
+  if (state.preferences.onboardingVersionSeen < ONBOARDING_VERSION) setTimeout(() => showOnboarding(0), 80);
 }
 
 function updateWallet() {
@@ -1060,7 +1129,7 @@ function navigate(view) {
   $$('.nav-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.nav === view));
   renderView();
   if ((view === 'home' || view === 'profile') && signedInEconomyPlayer()) retryPendingEconomyClaims().catch(() => {});
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: reducedMotionEnabled() ? 'auto' : 'smooth' });
 }
 
 function renderView() {
@@ -1069,6 +1138,8 @@ function renderView() {
   if (currentView === 'shop') renderShop();
   if (currentView === 'cosmetics') renderCosmetics();
   if (currentView === 'profile') renderProfile();
+  if (currentView === 'help') renderHelp();
+  if (currentView === 'settings') renderSettings();
   updateWallet();
 }
 
@@ -1227,6 +1298,7 @@ function renderHome() {
       <button class="text-btn" data-go="puzzles">See all</button>
     </div>
     <div class="puzzle-grid">${starterPuzzles.map((puzzle) => puzzleCard(puzzle, 'browse')).join('')}</div>
+    ${renderAppFooter()}
   `;
   bindViewEvents();
   $('#quickPlayBtn').addEventListener('click', () => {
@@ -1234,6 +1306,79 @@ function renderHome() {
     navigate('puzzles');
   });
   $('#dailyChallengeBtn').addEventListener('click', launchDailyChallenge);
+}
+function readInvalidLocalActiveJigsaw() {
+  try {
+    const save = (JSON.parse(localStorage.getItem(JIGSAW_SAVE_KEY)) || {})[jigsawSaveScope()];
+    return save && !validActiveJigsawSave(save) ? save : null;
+  } catch { return { corrupt: true }; }
+}
+
+function configuredBrandLinks() {
+  return [
+    ['home', 'Gutter Grin Home'], ['shop', 'Shop Gutter Grin'], ['games', 'More Gutter Grin Games'],
+  ].filter(([key]) => typeof GUTTER_GRIN_LINKS[key] === 'string' && /^https?:\/\//i.test(GUTTER_GRIN_LINKS[key]));
+}
+
+function renderAppFooter() {
+  const links = configuredBrandLinks().map(([key, label]) => `<a href="${escapeHtml(GUTTER_GRIN_LINKS[key])}" target="_blank" rel="noopener noreferrer">${label}</a>`).join('');
+  return `<footer class="app-footer"><div><button class="text-btn" data-go="help">How to Play</button><button class="text-btn" data-go="settings">Settings</button></div>${links ? `<div>${links}</div>` : ''}<small>Gutter Grin: Puzzle Panic v${APP_VERSION}</small></footer>`;
+}
+
+function renderHelp() {
+  const sections = [
+    ['Swap Puzzle', 'Select one tile, then another, to swap them. Rebuild the artwork in as few moves as you can.'],
+    ['Classic Jigsaw', 'Choose 52, 252, 500, or 1,000 pieces. Neighboring pieces connect anywhere and connected groups move together.'],
+    ['Mouse controls', 'Drag a piece or group. Drag empty workspace, Space + drag, or middle-mouse drag to pan. Use the mouse wheel to zoom.'],
+    ['Touch controls', 'Drag a piece with one finger. Drag an empty area to pan. Pinch to zoom.'],
+    ['Zoom & workspace', 'Fit centers the assembly board. Fit All shows the full workspace. Reset restores the default view. Gather Pieces organizes loose groups. Preview briefly shows the finished artwork.'],
+    ['Save & Continue', 'Use Save & Exit when leaving an unfinished Jigsaw. Continue Puzzle restores it later on this device, with cloud sync when signed in.'],
+    ['Jigsaw Tools', 'Hint, Edge Finder, Auto-Place, and Background Reveal cost coins and can help with difficult boards.'],
+    ['Coins & Puzzle Packs', 'Complete puzzles and challenges to earn coins. Spend coins to unlock packs, tools, and cosmetics. Signed-in purchases require an online economy connection.'],
+    ['Challenges', 'The Daily Challenge offers a daily bonus and streak. Weekly Challenges track a rotating goal and reward.'],
+    ['Cosmetics, Profile & Achievements', 'Customize Jigsaw tables and effects. Your Profile tracks progress, challenge streaks, and achievements.'],
+  ];
+  viewHost.innerHTML = `<div class="section-head page-heading"><div><h3>How to Play</h3><p>The short version of every important control.</p></div></div><div class="help-grid">${sections.map(([title, copy]) => `<section class="info-card"><h4>${title}</h4><p>${copy}</p></section>`).join('')}</div>${renderAppFooter()}`;
+  bindViewEvents();
+}
+
+function renderSettings() {
+  const preferences = normalizePreferences(state.preferences);
+  const account = signedInEconomyPlayer() ? `Signed in as ${escapeHtml(state.profile.name || 'Player')}` : 'Guest · progress stored on this device';
+  viewHost.innerHTML = `<div class="section-head page-heading"><div><h3>Settings</h3><p>Accessibility, audio, and app information.</p></div></div>
+    <section class="settings-card">
+      <label class="setting-row"><span><strong>Sound Effects</strong><small>Game feedback sounds; no music.</small></span><input id="soundSetting" type="checkbox" ${preferences.soundEffects ? 'checked' : ''}></label>
+      <label class="setting-row"><span><strong>Reduced Motion</strong><small>${preferences.reducedMotion === null ? 'Following your device setting until changed.' : 'Your explicit preference is saved.'}</small></span><input id="motionSetting" type="checkbox" ${reducedMotionEnabled() ? 'checked' : ''}></label>
+      <div class="setting-row"><span><strong>First-run tutorial</strong><small>Replay the four-step introduction.</small></span><button id="replayTutorialBtn" class="btn subtle" type="button">Show Again</button></div>
+      <div class="setting-row"><span><strong>Account</strong><small>${account}</small></span><button class="btn ghost" type="button" data-go="profile">Manage</button></div>
+    </section>${renderAppFooter()}`;
+  $('#soundSetting').addEventListener('change', (event) => { state.preferences.soundEffects = event.target.checked; saveState(); if (event.target.checked) soundManager.play('confirm'); });
+  $('#motionSetting').addEventListener('change', (event) => { state.preferences.reducedMotion = event.target.checked; applyMotionPreference(); saveState(); renderSettings(); });
+  $('#replayTutorialBtn').addEventListener('click', () => { state.preferences.onboardingVersionSeen = 0; saveState(); showOnboarding(0); });
+  bindViewEvents();
+}
+
+const ONBOARDING_STEPS = [
+  ['GG', 'Welcome', '<p>Choose between <strong>Swap Puzzle</strong> and <strong>Classic Jigsaw</strong>.</p>'],
+  ['🧩', 'Classic Jigsaw', '<p>Choose 52 to 1,000 pieces, connect neighbors anywhere, zoom and pan, then Save & Continue whenever you need a break.</p>'],
+  ['🪙', 'Coins & Extras', '<p>Completing puzzles earns coins. Unlock puzzle packs, use Jigsaw Tools, and customize your table and effects.</p>'],
+  ['🏆', 'Challenges', '<p>Take on Daily and Weekly Challenges, unlock achievements, and follow your progress in your Profile.</p>'],
+];
+
+function finishOnboarding() {
+  state.preferences.onboardingVersionSeen = ONBOARDING_VERSION; saveState();
+  $('#onboardingBackdrop').hidden = true; lastFocusedBeforeModal?.focus?.();
+}
+
+function showOnboarding(index = 0) {
+  const step = Math.max(0, Math.min(ONBOARDING_STEPS.length - 1, index));
+  const [icon, title, body] = ONBOARDING_STEPS[step], backdrop = $('#onboardingBackdrop');
+  lastFocusedBeforeModal = document.activeElement; backdrop.dataset.step = String(step);
+  $('#onboardingStep').textContent = `STEP ${step + 1} OF ${ONBOARDING_STEPS.length}`; $('#onboardingIcon').textContent = icon;
+  $('#onboardingTitle').textContent = title; $('#onboardingBody').innerHTML = body;
+  $('.onboarding-progress').innerHTML = ONBOARDING_STEPS.map((_, i) => `<span class="${i <= step ? 'active' : ''}"></span>`).join('');
+  $('#nextOnboardingBtn').textContent = step === ONBOARDING_STEPS.length - 1 ? 'Start Playing' : 'Next';
+  backdrop.hidden = false; $('#nextOnboardingBtn').focus();
 }
 
 function puzzleCard(puzzle, context = 'select') {
@@ -1267,16 +1412,22 @@ function flowHeader(kicker, title, copy, backStep) {
 
 function renderModeSelection() {
   activeJigsawSave = readLocalActiveJigsaw();
+  const invalidSave = !activeJigsawSave && readInvalidLocalActiveJigsaw();
   const resumedPuzzle = activeJigsawSave && PUZZLES.find((p) => p.id === activeJigsawSave.puzzleId);
   viewHost.innerHTML = `
     ${flowHeader('STEP 1 OF 4', 'Choose your mode', 'How do you want to put the chaos back together?')}
     ${resumedPuzzle ? `<section class="play-panel"><p class="eyebrow">UNFINISHED JIGSAW</p><h3>${escapeHtml(resumedPuzzle.title)}</h3><p>${JIGSAW_DIFFICULTIES[activeJigsawSave.difficulty].label} · ${activeJigsawSave.pieces.length.toLocaleString()} pieces · ${formatTime(activeJigsawSave.elapsedSeconds || 0)}</p><button class="btn primary" id="continueJigsawBtn">Continue Puzzle</button></section>` : ''}
+    ${invalidSave ? `<section class="play-panel error-panel"><p class="eyebrow">SAVE NEEDS ATTENTION</p><h3>This Jigsaw save cannot be restored</h3><p>It may be damaged or incompatible. It has not been deleted.</p><div class="hero-actions"><button class="btn ghost" id="invalidSaveBackBtn">Back</button><button class="btn primary" id="startFreshSaveBtn">Start Fresh</button></div></section>` : ''}
     <div class="mode-grid">${Object.entries(GAME_MODES).map(([key, mode]) => `
       <button class="mode-card ${key}" data-mode="${key}">
         <span class="mode-icon">${mode.icon}</span><span><strong>${mode.label}</strong><small>${mode.description}</small></span><b>Choose →</b>
       </button>`).join('')}</div>
   `;
   $('#continueJigsawBtn')?.addEventListener('click', resumeActiveJigsaw);
+  $('#invalidSaveBackBtn')?.addEventListener('click', () => navigate('home'));
+  $('#startFreshSaveBtn')?.addEventListener('click', () => showModal('Start Fresh?', 'This deletes only the incompatible local Jigsaw save. Your other progress is unchanged.', [
+    { label: 'Cancel' }, { label: 'Delete Bad Save', primary: true, action: () => { writeLocalActiveJigsaw(null); renderModeSelection(); } },
+  ], '!'));
   $$('[data-mode]').forEach((button) => button.addEventListener('click', () => {
     state.selectedMode = button.dataset.mode;
     saveState();
@@ -1614,9 +1765,24 @@ function bindViewEvents() {
   }));
 }
 
-function startGame(puzzle) {
+async function loadPuzzleImage(puzzle) {
+  const image = new Image(); image.src = puzzle.image;
+  try { await image.decode(); } catch { /* Validate dimensions below for older browsers. */ }
+  if (!image.complete || !image.naturalWidth) throw new Error('Puzzle artwork failed to load.');
+  return image;
+}
+
+function showArtworkFailure(puzzle, retry) {
+  showModal("Puzzle artwork couldn't be loaded.", 'Check your connection, then try again or return to the puzzle list.', [
+    { label: 'Back to Puzzles', action: () => { showScreen(mainScreen); currentView = 'puzzles'; renderView(); } },
+    { label: 'Try Again', primary: true, action: retry },
+  ], '!');
+}
+
+async function startGame(puzzle) {
   clearInterval(timerHandle);
   clearTimeout(previewHandle);
+  try { await loadPuzzleImage(puzzle); } catch (error) { console.error('Puzzle image load failed:', error); return showArtworkFailure(puzzle, () => startGame(puzzle)); }
   const diff = SWAP_DIFFICULTIES[state.difficulty];
   const count = diff.cols * diff.rows;
   const pieces = Array.from({ length: count }, (_, i) => i);
@@ -1689,6 +1855,7 @@ function selectTile(pos) {
   if (!game || game.completed) return;
   if (game.selected === null) {
     game.selected = pos;
+    soundManager.play('pickup');
     renderBoard();
     return;
   }
@@ -1734,6 +1901,7 @@ async function finishGame() {
   recordWeeklyPuzzleCompletion('swap', state.difficulty);
   evaluateAchievements();
   saveState();
+  soundManager.play(rewardUnavailable ? 'completion' : 'coin');
 
   showModal(
     'Puzzle Complete!',
@@ -1798,12 +1966,9 @@ async function startJigsaw(resumeSave = null) {
   const puzzle = jigsawGame?.puzzle;
   const difficulty = jigsawGame?.difficulty || 'easy';
   if (!puzzle) return;
-  const image = new Image();
-  image.src = puzzle.image;
-  try { await image.decode(); } catch { /* The load event fallback below still validates dimensions. */ }
-  if (!image.complete || !image.naturalWidth) {
-    return showModal('Artwork Could Not Load', 'Please check your connection and try starting this puzzle again.', [{ label: 'Back', primary: true }], '!');
-  }
+  let image;
+  try { image = await loadPuzzleImage(puzzle); }
+  catch (error) { console.error('Puzzle image load failed:', error); return showArtworkFailure(puzzle, () => startJigsaw(resumeSave)); }
   const startButton = $('#startJigsawBtn');
   startButton.disabled = true; startButton.textContent = resumeSave ? 'Restoring Puzzle…' : 'Preparing Puzzle…';
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -1851,6 +2016,7 @@ async function finishJigsaw(engine) {
   engine.stopTimer();
   engine.safelyTriggerCosmeticEffect({ x: engine.board.x + engine.board.width / 2, y: engine.board.y + engine.board.height / 2 }, true);
   engine.renderCompleted();
+  soundManager.play('completion');
   const seconds = engine.seconds;
   let baseReward = engine.config.reward;
   let timeBonus = jigsawTimeBonus(engine.difficulty, seconds);
@@ -2735,6 +2901,7 @@ class JigsawEngine {
       x: members.reduce((sum, piece) => sum + piece.targetX, 0) / members.length,
       y: members.reduce((sum, piece) => sum + piece.targetY, 0) / members.length,
     });
+    if (newlyPlaced > 0 && this.placed !== this.pieceCount) soundManager.play('placement');
     recordLifetimeJigsawPiecesPlaced(newlyPlaced);
     $('#jigsawPlacedText').textContent = `${this.placed.toLocaleString()} / ${this.pieceCount.toLocaleString()}`;
     return true;
@@ -2778,6 +2945,7 @@ class JigsawEngine {
     stationary.forEach((id) => { this.pieces[id].connectedPulseUntil = pulseUntil; });
     const joined = [...stationary].map((id) => this.pieces[id]);
     this.safelyTriggerCosmeticEffect({ x: joined.reduce((sum, piece) => sum + piece.x, 0) / joined.length, y: joined.reduce((sum, piece) => sum + piece.y, 0) / joined.length });
+    soundManager.play('pieceSnap');
     this.bringGroupToFront(stationaryGroupId);
     this.canvas.dispatchEvent(new CustomEvent('jigsaw:connected', { detail: { groupId: stationaryGroupId, size: stationary.size } }));
     setTimeout(() => this.requestRender(), 270);
@@ -2884,6 +3052,7 @@ class JigsawEngine {
 
   triggerCosmeticEffect(point, completion = false) {
     if (this.pieceEffect.id === 'classic-effect') return;
+    if (reducedMotionEnabled()) return;
     const now = performance.now();
     const count = completion ? 36 : 12;
     const duration = completion ? 1500 : 560;
@@ -3241,7 +3410,7 @@ async function signInWithProvider(providerName) {
 
     showModal(
       'Sign-in Failed',
-      err?.message || 'The authentication popup did not complete.',
+      friendlyAuthError(err),
       [{ label: 'Try Again', primary: true }],
       '!'
     );
@@ -3250,6 +3419,7 @@ async function signInWithProvider(providerName) {
 
 function showModal(title, body, actions = [], icon = '✓') {
   const backdrop = $('#modalBackdrop');
+  lastFocusedBeforeModal = document.activeElement;
   $('#modalTitle').textContent = title;
   $('#modalBody').textContent = body;
   $('#modalIcon').textContent = icon;
@@ -3262,11 +3432,14 @@ function showModal(title, body, actions = [], icon = '✓') {
     btn.textContent = item.label;
     btn.addEventListener('click', () => {
       backdrop.hidden = true;
-      item.action?.();
+      const result = item.action?.();
+      if (result?.catch) result.catch((error) => { console.error('Dialog action failed:', error); showToast('Something went wrong. Please try again.'); });
+      if (!item.action) lastFocusedBeforeModal?.focus?.();
     });
     host.appendChild(btn);
   });
   backdrop.hidden = false;
+  host.querySelector('.primary, .btn')?.focus();
 }
 
 function showToast(message) {
@@ -3302,6 +3475,13 @@ $('#guestBtn').addEventListener('click', () => {
 });
 $('#googleBtn').addEventListener('click', () => signInWithProvider('google'));
 $('#facebookBtn').addEventListener('click', () => signInWithProvider('facebook'));
+document.addEventListener('pointerdown', soundManager.unlock, { once: true, passive: true });
+document.addEventListener('keydown', soundManager.unlock, { once: true });
+$('#skipOnboardingBtn').addEventListener('click', finishOnboarding);
+$('#nextOnboardingBtn').addEventListener('click', () => {
+  const next = Number($('#onboardingBackdrop').dataset.step || 0) + 1;
+  if (next >= ONBOARDING_STEPS.length) finishOnboarding(); else showOnboarding(next);
+});
 $$('[data-nav]').forEach((btn) => btn.addEventListener('click', () => {
   if (btn.dataset.nav === 'puzzles') puzzleFlow = { step: 'mode', puzzleId: null };
   navigate(btn.dataset.nav);
@@ -3351,6 +3531,7 @@ $('#exitJigsawBtn').addEventListener('click', () => {
 });
 
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#onboardingBackdrop').hidden) { e.preventDefault(); finishOnboarding(); return; }
   if (e.key === 'Escape' && !$('#modalBackdrop').hidden) {
     e.preventDefault();
     $('#modalBackdrop').hidden = true;
@@ -3363,10 +3544,49 @@ window.addEventListener('keydown', (e) => {
     else $('#exitJigsawBtn').click();
   }
 });
-window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); });
+window.addEventListener('resize', () => { if (game && gameScreen.classList.contains('active')) renderBoard(); jigsawGame?.resize?.(); });
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+function updateConnectivity(online, initial = false) {
+  const status = $('#networkStatus');
+  if (!online) {
+    status.textContent = 'Offline — account purchases and rewards will sync after you reconnect.'; status.className = 'network-status offline'; status.hidden = false;
+  } else if (!initial) {
+    status.textContent = 'Back online'; status.className = 'network-status online'; status.hidden = false;
+    setTimeout(() => { status.hidden = true; }, 2600);
+    retryPendingEconomyClaims().catch((error) => console.error('Pending reward retry failed:', error));
+  } else status.hidden = true;
 }
 
+function friendlyAuthError(error) {
+  return ({
+    'auth/unauthorized-domain': 'Sign-in is unavailable from this address.',
+    'auth/popup-closed-by-user': 'The sign-in window was closed before sign-in finished.',
+    'auth/popup-blocked': 'Your browser blocked the sign-in window. Allow popups and try again.',
+    'auth/network-request-failed': 'Sign-in could not reach the network. Check your connection and try again.',
+    'auth/too-many-requests': 'Sign-in is temporarily limited. Please wait a moment and try again.',
+  })[error?.code] || 'Sign-in is temporarily unavailable. Please try again or continue as a guest.';
+}
+window.addEventListener('offline', () => updateConnectivity(false));
+window.addEventListener('online', () => updateConnectivity(true));
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('./sw.js').then((registration) => {
+    const showUpdate = (worker) => { waitingServiceWorker = worker; $('#updateNotice').hidden = false; };
+    if (registration.waiting) showUpdate(registration.waiting);
+    registration.addEventListener('updatefound', () => registration.installing?.addEventListener('statechange', () => {
+      if (registration.installing?.state === 'installed' && navigator.serviceWorker.controller) showUpdate(registration.installing);
+    }));
+  }).catch((error) => console.error('Service worker registration failed:', error));
+}
+
+$('#refreshAppBtn').addEventListener('click', () => {
+  if (jigsawGame && !jigsawGame.completed) return showToast('Save & exit your active puzzle before refreshing.');
+  if (!waitingServiceWorker) return location.reload();
+  navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+  waitingServiceWorker.postMessage({ type: 'SKIP_WAITING' });
+});
+
+state.preferences = normalizePreferences(state.preferences);
+applyMotionPreference();
+updateConnectivity(navigator.onLine, true);
 updateWallet();

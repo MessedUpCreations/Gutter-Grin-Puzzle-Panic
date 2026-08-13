@@ -1,4 +1,4 @@
-const CACHE = 'gutter-grin-puzzle-panic-v23';
+const CACHE = 'gutter-grin-puzzle-panic-v24';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
   './assets/puzzles/starter/backyard-cookout.webp',
@@ -26,7 +26,10 @@ const ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
-  self.skipWaiting();
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
